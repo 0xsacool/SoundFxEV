@@ -89,6 +89,7 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
     /** The echoes' part in the sides, see [configure]. */
     private var convolverWidth: Convolver? = null
     private var bassDb = 0.0
+    private var deepTone = false
     private var shelfDb = Double.NaN
     private val left = Channel(sampleRate.toDouble())
     private val right = Channel(sampleRate.toDouble())
@@ -182,11 +183,11 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
      * Switches engine and exhaust; [impulse] is [note]'s response, as [ImpulseResponse.read] gives
      * it, and [bass] how many decibels to add below about 200 Hz, of which [ExhaustNote.bass] takes its share.
      */
-    fun configure(layout: EngineLayout, note: ExhaustNote, impulse: FloatArray, crackle: Boolean, bass: Double) =
-        configure(prepare(layout, note, impulse), crackle, bass)
+    fun configure(layout: EngineLayout, note: ExhaustNote, impulse: FloatArray, crackle: Boolean, bass: Double, deep: Boolean = false) =
+        configure(prepare(layout, note, impulse), crackle, bass, deep)
 
     /** As above, with the slow part already done by [prepare], so it can switch while playing. */
-    fun configure(recording: Recording, crackle: Boolean, bass: Double) {
+    fun configure(recording: Recording, crackle: Boolean, bass: Double, deep: Boolean = false) {
         val layout = recording.layout
         val note = recording.note
         val newLayout = layout != this.layout || voices.isEmpty()
@@ -220,10 +221,12 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         this.crackle = crackle
         bassDb = bass
         val shelf = bass * note.bass
-        if (shelf != shelfDb) {
-            left.bass(shelf)
-            right.bass(shelf)
+        if (shelf != shelfDb || deepTone != deep) {
+            val corner = if (deep) 150.0 else BASS_CORNER
+            left.bass(shelf, corner)
+            right.bass(shelf, corner)
         }
+        deepTone = deep
         shelfDb = shelf
     }
 
@@ -293,15 +296,16 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val small = smallSpeaker
         val overtones = HARMONICS * bassDb / MAX_BASS_DB
         // The firing note and the hiss don't come through the recording, so its loudness is no business of theirs.
-        val bodyGain = OUTPUT_GAIN * BODY * (0.5 + bassDb / MAX_BASS_DB)
+        val bodyGain = OUTPUT_GAIN * BODY * (0.5 + bassDb / MAX_BASS_DB) * (if (deepTone) 1.15 else 1.0)
         // Jet noise grows steeply with how fast the gas leaves: a whisper at idle, a rasp flat out.
         val flow = sqrt(toLoad * toRpm / CRUISE_FLOW).coerceIn(MIN_HISS, MAX_HISS)
         // Mostly the throttle: a big engine flaring as it catches still sounds deep, blipped it barks.
         val effort = (toLoad * toLoad * sqrt(toRpm / OPEN_RPM)).coerceIn(0.0, 1.0)
-        muffleHz += (MUFFLED_HZ * (OPEN_HZ / MUFFLED_HZ).pow(effort) - muffleHz) * MUFFLE_STEP
+        val openHz = if (deepTone) 2800.0 else OPEN_HZ
+        muffleHz += (MUFFLED_HZ * (openHz / MUFFLED_HZ).pow(effort) - muffleHz) * MUFFLE_STEP
         muffleMid.open(muffleHz)
         muffleSide.open(muffleHz)
-        val raspGain = OUTPUT_GAIN * RASP * note.rasp * flow
+        val raspGain = OUTPUT_GAIN * RASP * note.rasp * flow * (if (deepTone) 0.58 else 1.0)
         val thumpGain = OUTPUT_GAIN * THUMP
         val crackGain = loudness * CRACK
         // Under the bonnet rather than out of the tailpipe: none of it goes through the exhaust.
@@ -551,8 +555,8 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         private val speaker1 = Biquad.highPass(SMALL_SPEAKER_CORNER, sampleRate)
         private val speaker2 = Biquad.highPass(SMALL_SPEAKER_CORNER, sampleRate)
 
-        fun bass(db: Double) {
-            shelf.lowShelf(BASS_CORNER, db, sampleRate)
+        fun bass(db: Double, corner: Double = BASS_CORNER) {
+            shelf.lowShelf(corner, db, sampleRate)
         }
 
         fun full(x: Double) = rumble2.process(rumble1.process(shelf.process(x)))

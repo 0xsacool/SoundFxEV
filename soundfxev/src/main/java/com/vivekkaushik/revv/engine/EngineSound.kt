@@ -32,6 +32,10 @@ data class EngineSoundSettings(
     val smoothing: Int = DEFAULT_SMOOTHING,
     /** The starter and the engine catching when the car starts. */
     val startUp: Boolean = true,
+    /** SoundFxEV cabin voicing, kept separate from the original exhaust layouts. */
+    val deepTone: Boolean = false,
+    /** Avoid the phone-speaker high-pass on a BYD unit whose routed audio is misidentified. */
+    val forceFullRange: Boolean = false,
 ) {
     /**
      * The volume as a gain, on a curve so each step sounds about as big as the last. The top
@@ -201,8 +205,8 @@ class EngineSound(private val context: Context) {
                 applied = null
             }
             val last = applied
-            if (last == null || settings.crackle != last.crackle || settings.bass != last.bass) {
-                synth.configure(recording, settings.crackle, settings.bassDb)
+            if (last == null || settings.crackle != last.crackle || settings.bass != last.bass || settings.deepTone != last.deepTone) {
+                synth.configure(recording, settings.crackle, settings.bassDb, settings.deepTone)
                 applied = settings
             }
         }
@@ -220,7 +224,7 @@ class EngineSound(private val context: Context) {
             val clip = if (settings.startUp) startClip else null
             follower.scripted = clip == null
             // Headphones, Bluetooth and the car come and go: check every half second or so.
-            if (blocks++ % ROUTE_CHECK_BLOCKS == 0) synth.smallSpeaker = playsOnPhoneSpeaker(track)
+            if (blocks++ % ROUTE_CHECK_BLOCKS == 0) synth.smallSpeaker = !settings.forceFullRange && playsOnPhoneSpeaker(track)
             val now = SystemClock.elapsedRealtimeNanos()
             // Kept moving even while previewing, so it doesn't jump when the preview ends. Rendered
             // for when it will be heard, which over Bluetooth is a fifth of a second away.

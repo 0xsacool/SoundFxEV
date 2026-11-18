@@ -30,7 +30,14 @@ class MainActivity : Activity() {
         Profile("Supercar V10", EngineLayout.V10, 8500),
         Profile("V12", EngineLayout.V12, 8500),
     )
-    private val notes = ExhaustNote.values()
+    private data class Tone(val label: String, val note: ExhaustNote, val deep: Boolean = false)
+    private val tones = listOf(
+        Tone("Stock", ExhaustNote.STOCK),
+        Tone("Sport", ExhaustNote.SPORT),
+        Tone("Deep Exhaust • JDM", ExhaustNote.SPORT, true),
+        Tone("Open", ExhaustNote.OPEN),
+        Tone("Straight pipe", ExhaustNote.STRAIGHT_PIPE),
+    )
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audioManager: AudioManager
     private lateinit var rpmLabel: TextView
@@ -42,7 +49,9 @@ class MainActivity : Activity() {
     private var engine: EngineSound? = null
     private var focus: AudioFocusRequest? = null
     private var profile = profiles[0]
-    private var note = ExhaustNote.SPORT
+    private var tone = tones[2]
+    private var bass = 23
+    private var fullRange = true
     private var volume = 7
     private var pedal = 0
     private var rpm = 900.0
@@ -80,7 +89,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 2 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
@@ -93,10 +102,10 @@ class MainActivity : Activity() {
         }
         col.addView(profileSpinner)
         col.addView(label("EXHAUST", 14, Color.LTGRAY))
-        col.addView(spinner(notes.map { it.label }) {
-            note = notes[it]
+        col.addView(spinner(tones.map { it.label }) {
+            tone = tones[it]
             applySettings()
-        }.apply { setSelection(notes.indexOf(note)) })
+        }.apply { setSelection(tones.indexOf(tone)) })
 
         throttleLabel = label("คันเร่งจำลอง  0%", 17, Color.WHITE)
         col.addView(throttleLabel)
@@ -107,6 +116,19 @@ class MainActivity : Activity() {
         col.addView(throttle)
         col.addView(label("ระดับเสียงทดลอง (เริ่มเบา)", 15, Color.LTGRAY))
         col.addView(seek(15, volume) { volume = it; applySettings() })
+        val bassLabel = label("BASS  $bass / 30", 17, Color.WHITE)
+        col.addView(bassLabel)
+        col.addView(seek(30, bass) {
+            bass = it
+            bassLabel.text = "BASS  $it / 30"
+            applySettings()
+        })
+        col.addView(CheckBox(this).apply {
+            text = "ลำโพงรถ Full range (ไม่ตัดเบสแบบลำโพงมือถือ)"
+            isChecked = fullRange
+            setTextColor(Color.LTGRAY)
+            setOnCheckedChangeListener { _, checked -> fullRange = checked; applySettings() }
+        })
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toggle = Button(this).apply {
@@ -150,10 +172,12 @@ class MainActivity : Activity() {
         engine?.apply(EngineSoundSettings(
             enabled = true,
             layout = profile.layout,
-            note = note,
+            note = tone.note,
             volume = volume,
             crackle = true,
-            bass = 10,
+            bass = bass,
+            deepTone = tone.deep,
+            forceFullRange = fullRange,
             surround = false,
             smoothing = 8,
             startUp = true,

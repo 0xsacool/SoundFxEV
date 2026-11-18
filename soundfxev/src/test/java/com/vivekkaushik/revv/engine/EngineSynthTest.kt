@@ -58,6 +58,25 @@ class EngineSynthTest {
     }
 
     @Test
+    fun deepExhaustVoicingStaysFiniteAndBelowFullScale() {
+        val state = EngineState(3600.0, 0.8, overrun = false, running = true)
+        for (layout in listOf(EngineLayout.INLINE_6, EngineLayout.INLINE_4, EngineLayout.V8_CROSS_PLANE)) {
+            val synth = EngineSynth()
+            val note = ExhaustNote.SPORT
+            synth.configure(layout, note, ImpulseResponse.read(File("src/main/assets/" + note.impulse).readBytes()),
+                crackle = true, bass = EngineSynth.MAX_BASS_DB, deep = true)
+            val block = FloatArray(EngineSynth.BLOCK * EngineSynth.CHANNELS)
+            var heard = false
+            repeat(200) {
+                synth.render(block, state, EngineSynth.MAX_GAIN)
+                assertTrue(block.all { it.isFinite() && abs(it) < 1f })
+                heard = heard || block.any { abs(it) > 0.01f }
+            }
+            assertTrue("deep preset audible: $layout", heard)
+        }
+    }
+
+    @Test
     fun soundsFullFromTheLowEndToTheHiss() {
         // Next to music in a car, engine-sim's sound was 8-10 dB short below 80 Hz and 20 dB
         // above 2.5 kHz. Against the mids, where the exhausts resonate, the sporty one idled
