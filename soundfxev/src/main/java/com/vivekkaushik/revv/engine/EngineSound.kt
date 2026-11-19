@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
 
@@ -37,6 +38,11 @@ data class EngineSoundSettings(
     /** Avoid the phone-speaker high-pass on a BYD unit whose routed audio is misidentified. */
     val forceFullRange: Boolean = false,
     val turboEnabled: Boolean = false,
+    val blowOffEnabled: Boolean = false,
+    val turboVolume: Int = 75,
+    val blowOffVolume: Int = 85,
+    val turboFlutter: Boolean = false,
+    val popVolume: Int = 100,
 ) {
     /**
      * The volume as a gain, on a curve so each step sounds about as big as the last. The top
@@ -69,6 +75,7 @@ data class EngineSoundSettings(
 class EngineSound(private val context: Context) {
 
     private val follower = EngineFollower()
+    private val ventRequest = AtomicInteger(0)
 
     /**
      * The start-up recording, when this build has one (see .private/assets): played as the car
@@ -114,6 +121,14 @@ class EngineSound(private val context: Context) {
     fun report(reading: EngineReading) {
         follower.report(reading)
         wake()
+    }
+
+    /** Main thread posts a release event; only the audio thread touches the synth. */
+    fun requestBlowOff(audition: Boolean = false) {
+        if (!released && settings.blowOffEnabled) {
+            val event = if (audition) 2 else 1
+            ventRequest.getAndUpdate { maxOf(it, event) }
+        }
     }
 
     /** Starts, if start-up is on, and revs the chosen engine for a few seconds, so it can be heard parked. */
@@ -221,6 +236,11 @@ class EngineSound(private val context: Context) {
             configure(settings)
             synth.surround = settings.surround
             synth.turboEnabled = settings.turboEnabled
+            synth.blowOffEnabled = settings.blowOffEnabled
+            synth.turboLevel = settings.turboVolume.coerceIn(0, 100) / 100.0
+            synth.blowOffLevel = settings.blowOffVolume.coerceIn(0, 100) / 100.0
+            synth.turboFlutter = settings.turboFlutter
+            synth.popLevel = settings.popVolume.coerceIn(0, 100) / 100.0
             follower.smoothing = settings.smoothingFraction
             follower.startUp = settings.startUp
             val clip = if (settings.startUp) startClip else null
@@ -272,7 +292,8 @@ class EngineSound(private val context: Context) {
             } else {
                 1.0
             }
-            synth.render(block, state, level * handover)
+            val vent = ventRequest.getAndSet(0)
+            synth.render(block, state, level * handover, if (!muted && settings.blowOffEnabled) vent else 0)
             if (clip != null && clipAt >= 0) clipAt = mix(clip, clipAt, block, settings.gain / DEFAULT_GAIN)
             val written = track.write(block, 0, block.size, AudioTrack.WRITE_BLOCKING)
             check(written >= 0) { "AudioTrack write failed: $written" }

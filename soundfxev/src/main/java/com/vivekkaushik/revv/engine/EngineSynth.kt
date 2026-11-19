@@ -91,6 +91,11 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
     private var bassDb = 0.0
     private var deepTone = false
     var turboEnabled = false
+    var blowOffEnabled = false
+    var turboLevel = 0.75
+    var blowOffLevel = 0.85
+    var turboFlutter = false
+    var popLevel = 1.0
     private val turboFx = TurboFx(sampleRate.toDouble())
     private var shelfDb = Double.NaN
     private val left = Channel(sampleRate.toDouble())
@@ -237,7 +242,7 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
      * interleaved, moving smoothly from the last block's engine and [volume] (a gain, 0 to
      * [MAX_GAIN]) to these.
      */
-    fun render(out: FloatArray, state: EngineState, volume: Double) {
+    fun render(out: FloatArray, state: EngineState, volume: Double, ventEvent: Int = 0) {
         val convolverMid = convolverMid ?: error("Not configured")
         val convolverWidth = convolverWidth ?: error("Not configured")
         val fromRpm = rpm
@@ -245,7 +250,10 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val fromGain = gain
         val toRpm = state.rpm.coerceIn(0.0, MAX_RPM)
         val toLoad = state.load.coerceIn(0.0, MAX_LOAD)
-        if (turboEnabled) turboFx.setTarget(toRpm, toLoad, state.running && state.starter == 0.0) else turboFx.reset()
+        val turboRunning = state.running && state.starter == 0.0 && (turboEnabled || blowOffEnabled)
+        turboFx.setTarget(toRpm, toLoad, turboRunning)
+        if (!blowOffEnabled) turboFx.cancelVent()
+        if (turboRunning && blowOffEnabled && ventEvent > 0) turboFx.vent(audition = ventEvent == 2)
         overrunSeconds = if (state.overrun) overrunSeconds + BLOCK.toDouble() / sampleRate else 0.0
         val popChance = if (crackle && state.overrun && toRpm > POP_MIN_RPM) POP_CHANCE * exp(-overrunSeconds / POP_FADE_SECONDS) else 0.0
         // The blowdown dies away over a crank angle, so faster the higher the revs.
@@ -360,7 +368,10 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
             val t = (n + 1).toDouble() / BLOCK
             val g = fromGain + (toGain - fromGain) * t
             val c = (fromSqueeze + (toSqueeze - fromSqueeze) * t) * (fromDuck + (duck - fromDuck) * t)
-            val turbo = if (turboEnabled) turboFx.sample() else 0.0
+            val turbo = if (turboRunning) turboFx.sample(
+                if (turboEnabled) turboLevel else 0.0,
+                if (blowOffEnabled) blowOffLevel else 0.0, turboFlutter
+            ) else 0.0
             val x = SoftClip.process((outLeft[n] * c + thumpLeft[n] + turbo) * g)
             val y = SoftClip.process((outRight[n] * c + thumpRight[n] + turbo) * g)
             loudest = max(loudest, max(abs(x), abs(y)))
@@ -495,7 +506,7 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         voice.amplitude = max(0.0, (PUMPING + (1 - PUMPING) * load) * revs * (1 + variation * noise.gaussian()))
         if (popChance > 0 && noise.next() < popChance) {
             voice.popAt = POP_EARLIEST + noise.next() * POP_SPREAD
-            voice.popAmplitude = (POP_MIN + POP_EXTRA * noise.next()) * revs
+            voice.popAmplitude = (POP_MIN + POP_EXTRA * noise.next()) * revs * popLevel.coerceIn(0.0, 1.0)
         }
     }
 

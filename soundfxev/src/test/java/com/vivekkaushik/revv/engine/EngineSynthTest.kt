@@ -14,6 +14,43 @@ import org.junit.Test
 class EngineSynthTest {
 
     @Test
+    fun turboIsDifferentInActualDeepExhaustMixAtDemoVolume() {
+        val note = ExhaustNote.SPORT
+        val impulse = ImpulseResponse.read(File("src/main/assets/" + note.impulse).readBytes())
+        fun synth() = EngineSynth().apply {
+            configure(EngineLayout.INLINE_6, note, impulse, crackle = false,
+                bass = EngineSynth.MAX_BASS_DB * 23 / 30, deep = true)
+            surround = false
+        }
+        val dry = synth()
+        val wet = synth().apply { turboEnabled = true; blowOffEnabled = true }
+        val a = FloatArray(EngineSynth.BLOCK * EngineSynth.CHANNELS)
+        val b = FloatArray(a.size)
+        val run = EngineState(6000.0, 1.0, overrun = false, running = true)
+        val gain = 2.0 * (7.0 / 30) * (7.0 / 30)
+        repeat(200) {
+            dry.render(a, run, gain)
+            wet.render(b, run, gain)
+        }
+        fun diff() = rms(FloatArray(a.size) { b[it] - a[it] })
+        assertTrue("spool difference", diff() > 0.012)
+        wet.turboEnabled = false
+        val lift = EngineState(4000.0, 0.0, overrun = true, running = true)
+        var maxDifference = 0.0
+        repeat(30) {
+            dry.render(a, lift, gain)
+            wet.render(b, lift, gain, if (it == 0) 1 else 0)
+            assertTrue(b.all { it.isFinite() && abs(it) < 1f })
+            maxDifference = maxOf(maxDifference, diff())
+        }
+        assertTrue("release difference: $maxDifference", maxDifference > 0.01)
+        wet.blowOffEnabled = false
+        dry.render(a, lift, gain)
+        wet.render(b, lift, gain)
+        assertTrue("disabled effects equal dry mix", diff() < 0.00001)
+    }
+
+    @Test
     fun pulsesComeOncePerFiring() {
         // Four cylinders at 3,000 rpm fire 100 times a second; six at 4,000 rpm 200 times.
         assertEquals(441.0, strongestPeriod(EngineLayout.INLINE_4, 3000.0), 4.0)

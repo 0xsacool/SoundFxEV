@@ -57,6 +57,13 @@ class MainActivity : Activity() {
     private val drive = VirtualDrive()
     private var demoMode = 2
     private var turboEnabled = true
+    private var blowOffEnabled = true
+    private var turboVolume = 75
+    private var blowOffVolume = 85
+    private var turboFlutter = false
+    private var popEnabled = false
+    private var popVolume = 35
+    private val turboTrigger = TurboTrigger()
     private var pedal = 0
     private var rpm = 900.0
     private var lastTick = 0L
@@ -74,6 +81,7 @@ class MainActivity : Activity() {
                 rpmLabel.text = "${rpm.roundToInt()} RPM"
                 gearLabel.text = "N · Free rev"
                 sound.report(EngineReading(rpm.roundToInt(), 0, 0, null, pedal, pedal, now))
+                if (turboTrigger.advance(pedal, 0, rpm)) sound.requestBlowOff()
             } else {
                 val frame = drive.advance(dt, pedal, profile.limit,
                     if (demoMode == 2) VirtualDrive.Mode.SPORT else VirtualDrive.Mode.NORMAL)
@@ -87,6 +95,7 @@ class MainActivity : Activity() {
                 gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h (จำลอง)$shift"
                 sound.report(EngineReading(rpm.roundToInt(), frame.speedKmh.roundToInt(), frame.gear,
                     null, frame.load, frame.throttle, now))
+                if (turboTrigger.advance(pedal, frame.gear, rpm)) sound.requestBlowOff()
             }
             handler.postDelayed(this, 50L)
         }
@@ -105,7 +114,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 3 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 4 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
@@ -116,6 +125,7 @@ class MainActivity : Activity() {
         col.addView(spinner(listOf("Free rev (N)", "Normal · 6-speed", "Sport · 6-speed")) {
             demoMode = it
             drive.reset()
+            turboTrigger.reset()
             pedal = 0
             if (::throttle.isInitialized) throttle.progress = 0
             rpm = 900.0
@@ -127,6 +137,7 @@ class MainActivity : Activity() {
             profile = profiles[it]
             rpm = rpm.coerceAtMost(profile.limit.toDouble())
             drive.reset()
+            turboTrigger.reset()
             applySettings()
         }
         col.addView(profileSpinner)
@@ -159,12 +170,43 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> fullRange = checked; applySettings() }
         })
 
+        col.addView(label("TURBO & EXHAUST FX", 18, Color.WHITE))
         col.addView(CheckBox(this).apply {
-            text = "Turbo spool + Blow-off"
+            text = "Turbo Spool · เสียงหวีดตอนเร่ง"
             isChecked = turboEnabled
             setTextColor(Color.LTGRAY)
             setOnCheckedChangeListener { _, checked -> turboEnabled = checked; applySettings() }
         })
+        val spoolLabel = label("Turbo volume  $turboVolume%", 15, Color.LTGRAY)
+        col.addView(spoolLabel)
+        col.addView(seek(100, turboVolume) { turboVolume = it; spoolLabel.text = "Turbo volume  $it%"; applySettings() })
+        col.addView(CheckBox(this).apply {
+            text = "Blow-off · ถอนคันเร่ง / สับเกียร์ขึ้น"
+            isChecked = blowOffEnabled
+            setTextColor(Color.LTGRAY)
+            setOnCheckedChangeListener { _, checked -> blowOffEnabled = checked; applySettings() }
+        })
+        col.addView(spinner(listOf("Blow-off · ฟู่", "Flutter · ตุ๊ดตุ๊ดตุ๊ด")) { turboFlutter = it == 1; applySettings() })
+        val ventLabel = label("Blow-off volume  $blowOffVolume%", 15, Color.LTGRAY)
+        col.addView(ventLabel)
+        col.addView(seek(100, blowOffVolume) { blowOffVolume = it; ventLabel.text = "Blow-off volume  $it%"; applySettings() })
+        col.addView(Button(this).apply {
+            text = "TEST BLOW-OFF / FLUTTER"
+            setOnClickListener {
+                if (engine == null || !blowOffEnabled || blowOffVolume == 0) {
+                    Toast.makeText(this@MainActivity, "Start Engine และเปิด Blow-off ก่อนทดสอบ", Toast.LENGTH_SHORT).show()
+                } else engine?.requestBlowOff(audition = true)
+            }
+        })
+        col.addView(CheckBox(this).apply {
+            text = "Pop & Bang · เสียงท่อไอเสีย"
+            isChecked = popEnabled
+            setTextColor(Color.LTGRAY)
+            setOnCheckedChangeListener { _, checked -> popEnabled = checked; applySettings() }
+        })
+        val popLabel = label("Pop volume  $popVolume%", 15, Color.LTGRAY)
+        col.addView(popLabel)
+        col.addView(seek(100, popVolume) { popVolume = it; popLabel.text = "Pop volume  $it%"; applySettings() })
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toggle = Button(this).apply {
@@ -197,6 +239,7 @@ class MainActivity : Activity() {
         throttle.progress = 0
         rpm = 900.0
         drive.reset()
+        turboTrigger.reset()
         lastTick = 0
         engine = EngineSound(applicationContext)
         applySettings()
@@ -211,13 +254,18 @@ class MainActivity : Activity() {
             layout = profile.layout,
             note = tone.note,
             volume = volume,
-            crackle = true,
+            crackle = popEnabled,
             bass = bass,
             deepTone = tone.deep,
             forceFullRange = fullRange,
             surround = false,
             smoothing = if (demoMode == 0) 8 else 2,
             turboEnabled = turboEnabled,
+            blowOffEnabled = blowOffEnabled,
+            turboVolume = turboVolume,
+            blowOffVolume = blowOffVolume,
+            turboFlutter = turboFlutter,
+            popVolume = popVolume,
             startUp = true,
         ))
     }
@@ -236,6 +284,7 @@ class MainActivity : Activity() {
         if (::throttle.isInitialized) throttle.progress = 0
         if (::rpmLabel.isInitialized) rpmLabel.text = "900 RPM"
         drive.reset()
+        turboTrigger.reset()
         if (::gearLabel.isInitialized) gearLabel.text = if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
     }
 
