@@ -4,7 +4,7 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToInt
 
-/** Virtual gearbox using speed plus an optional directly measured pedal percentage.
+/** Virtual gearbox estimating load from GPS speed changes.
  * Accepts only fresh monotonic samples; data loss invalidates the frame and resets estimation.
  */
 internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
@@ -17,7 +17,6 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
     private var speed = 0.0
     private var accel = 0.0
     private var pedal = 0
-    private var hasMeasuredPedal = false
     private var gear = 1
     private var rpm = 900.0
     private var initialized = false
@@ -25,10 +24,9 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
     private var shiftLeft = 0.0
     private var cooldown = 0.0
 
-    fun acceptSpeed(kmh: Double, atNanos: Long, nowNanos: Long, measuredPedal: Int? = null): Boolean {
+    fun acceptSpeed(kmh: Double, atNanos: Long, nowNanos: Long): Boolean {
         if (!kmh.isFinite() || kmh !in 0.0..250.0 ||
-            nowNanos - atNanos !in 0L..maxAgeNanos ||
-            measuredPedal != null && measuredPedal !in 0..100) return false
+            nowNanos - atNanos !in 0L..maxAgeNanos) return false
         val previous = fixAt
         if (previous != null && atNanos <= previous) return false
         if (previous == null || atNanos - previous > maxAgeNanos) {
@@ -36,8 +34,7 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
             speed = kmh
             fixSpeed = kmh
             fixAt = atNanos
-            hasMeasuredPedal = measuredPedal != null
-            pedal = measuredPedal ?: if (kmh >= 3) 22 else 0
+            pedal = if (kmh >= 3) 22 else 0
             return true
         }
         val dt = (atNanos - previous) / 1e9
@@ -45,12 +42,11 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
         if (abs(raw) > 12.0) return false // reject unrealistic jumps / GPS spikes
         val lastAccel = accel
         accel = if (dt >= 0.65) 0.80 * raw + 0.20 * accel else 0.50 * raw + 0.50 * accel
-        hasMeasuredPedal = measuredPedal != null
-        pedal = measuredPedal ?: when {
+        pedal = when {
             kmh < 3 -> 0
             raw < -0.25 || accel < -0.25 -> 0
             lastAccel > 0.65 && raw < 0.15 -> 0 // abrupt lift into coasting
-            accel < 0.18 -> 22 // cruising, no measured pedal
+            accel < 0.18 -> 22 // steady-speed cruising
             else -> (30 + 70 * (accel / 2.7).coerceIn(0.0, 1.0)).roundToInt()
         }
         fixSpeed = kmh
@@ -105,7 +101,7 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
             (speed * ratios[gear - 1] + blip).coerceAtLeast(900.0 + slip).coerceAtMost(redline.toDouble())
         val rate = if (shift != VirtualDrive.Shift.NONE) 14000.0 else 5000.0
         rpm = (rpm + (target - rpm).coerceIn(-rate * dt, rate * dt)).coerceIn(900.0, redline.toDouble())
-        val estimated = if (!hasMeasuredPedal && speed < 2.5) 0 else pedal
+        val estimated = if (speed < 2.5) 0 else pedal
         val throttle = when (shift) {
             VirtualDrive.Shift.UP -> 0
             VirtualDrive.Shift.DOWN -> maxOf(28, estimated)
@@ -121,7 +117,6 @@ internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
         speed = 0.0
         accel = 0.0
         pedal = 0
-        hasMeasuredPedal = false
         gear = 1
         rpm = 900.0
         initialized = false

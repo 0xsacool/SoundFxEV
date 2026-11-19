@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
-    <!-- Required only for the user's local ADB connection at 127.0.0.1. -->
-    <uses-permission android:name="android.permission.INTERNET" />
     <application android:label="SoundFxEV" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">

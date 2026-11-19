@@ -6,34 +6,6 @@ import org.junit.Test
 class GpsDriveTest {
     private val sec = 1_000_000_000L
 
-    @Test fun measuredPedalTakesPriorityOverSpeedDerivative() {
-        val d = GpsDrive(maxAgeNanos = 800_000_000L)
-        val turbo = TurboTrigger()
-        val t = sec
-        assertTrue(d.acceptSpeed(36.0, t, t, measuredPedal = 80))
-        val press = d.frame(t, 0.05, 8000, true)!!
-        assertEquals(80, press.estimatedPedal)
-        assertEquals(80, press.throttle)
-        assertFalse(turbo.advance(press.estimatedPedal, press.gear, press.rpm))
-        val next = t + 100_000_000L
-        // Constant speed, but the actual pedal is now released.
-        assertTrue(d.acceptSpeed(36.0, next, next, measuredPedal = 0))
-        val lift = d.frame(next, 0.05, 8000, true)!!
-        assertEquals(0, lift.estimatedPedal)
-        assertTrue(turbo.advance(lift.estimatedPedal, lift.gear, lift.rpm))
-        assertFalse(turbo.advance(lift.estimatedPedal, lift.gear, lift.rpm))
-        assertFalse(d.acceptSpeed(36.0, next + 100_000_000L, next + 100_000_000L, measuredPedal = 101))
-        assertNull(d.frame(next + 900_000_000L, 0.05, 8000, true))
-    }
-    @Test fun actualPedalIsVisibleAtStandstill() {
-        val d = GpsDrive()
-        assertTrue(d.acceptSpeed(0.0, sec, sec, measuredPedal = 42))
-        val frame = d.frame(sec, 0.05, 8000, true)!!
-        assertEquals(42, frame.estimatedPedal)
-        assertEquals(900.0, frame.rpm, 0.01)
-        assertEquals(1, frame.gear)
-    }
-
     @Test fun noFixOrExpiredFixIsSilent() {
         val d = GpsDrive()
         assertNull(d.frame(sec, 0.05, 8000, false))

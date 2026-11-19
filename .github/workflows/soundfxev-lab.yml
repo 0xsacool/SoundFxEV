@@ -40,9 +40,9 @@ jobs:
                       print(line)
           PY
       - name: Prepare APK
-        run: cp "$(find soundfxev/build/outputs/apk/debug -name '*.apk' -print -quit)" SoundFxEV-0.1.0-alpha.7.2.apk
+        run: cp "$(find soundfxev/build/outputs/apk/debug -name '*.apk' -print -quit)" SoundFxEV-0.1.0-alpha.8.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: SoundFxEV-0.1.0-alpha.7.2
-          path: SoundFxEV-0.1.0-alpha.7.2.apk
+          name: SoundFxEV-0.1.0-alpha.8
+          path: SoundFxEV-0.1.0-alpha.8.apk
           if-no-files-found: error

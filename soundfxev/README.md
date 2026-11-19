@@ -1,18 +1,19 @@
-# SoundFxEV 0.1.0 Alpha 3
+# SoundFxEV 0.1.0 Alpha 8 — GPS Edition
 
-Separate experimental Android sound lab for stationary testing on BYD DiLink Android 9+.
-Does not replace the launcher, does not read or write vehicle data, and does not modify
-the AVAS or TripLog. No background playback. Audio stops when leaving the activity or
-losing audio focus. Start at low volume; operate only when parked.
+Standalone Android sound lab (Android 9+). Real driving uses GPS speed only, with estimated
+load, virtual RPM and a fictional six-speed gearbox. No ADB, vehicle SDK, OBD or network
+permission is required. No vehicle control, location recording, uploads, or AVAS changes.
 
-- Manual throttle and synthetic RPM, six engine layouts, exhaust selector and volume control.
-- Alpha 2: Bass 0–30 (default 23), Deep Exhaust voicing, full-range cabin option, and existing limiter.
-- Alpha 3: fictional 6-speed gear demo, Normal/Sport modes, throttle cuts, downshift rev matching, and optional procedural turbo spool/blow-off. All speed, RPM and gear values are virtual.
-- Independent application ID: com.sacool.soundfxev.
-- Next phase: validate read-only BYD telemetry rates and lifecycle; actual vehicle inputs.
-  Do not enable real-car mode until stationary audio and fault handling pass device tests.
+- GPS Sport is the default; GPS Normal is also available.
+- Parked-only sound demos: Free rev, Demo Normal and Demo Sport.
+- Six engine layouts, exhaust profiles, adjustable volume/Bass, full-range cabin audio,
+  optional turbo spool, blow-off, flutter, and pop & bang.
+- Alpha 7.2 coast audio retained: engine sound remains audible during deceleration.
+- Playback stops when leaving the activity or losing audio focus, and is muted when GPS
+  data is missing or stale. Configure while parked and start at low volume.
+- Independent application ID: com.sacool.soundfxev. EV TripLog is unchanged.
 
-Build from repository root: `./gradlew -p soundfxev testDebugUnitTest assembleDebug`.
+Build: `./gradlew -p soundfxev testDebugUnitTest assembleDebug`.
 Use the SoundFxEV Alpha APK GitHub Actions artifact for the debug build.
 
 ## Credits and license
