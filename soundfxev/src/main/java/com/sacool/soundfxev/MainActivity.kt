@@ -1,8 +1,13 @@
 package com.sacool.soundfxev
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -19,7 +24,7 @@ import com.vivekkaushik.revv.engine.EngineSoundSettings
 import com.vivekkaushik.revv.engine.ExhaustNote
 import kotlin.math.roundToInt
 
-/** Stationary audio lab. No vehicle access, CAN writes, GPS, wake lock or background service. */
+/** Foreground-only sound lab; GPS speed is read locally, never recorded or sent. */
 class MainActivity : Activity() {
     private data class Profile(val title: String, val layout: EngineLayout, val limit: Int)
     private val profiles = listOf(
@@ -47,6 +52,28 @@ class MainActivity : Activity() {
     private lateinit var throttle: SeekBar
     private lateinit var toggle: Button
     private lateinit var profileSpinner: Spinner
+    private lateinit var releaseButton: Button
+    private lateinit var testButton: Button
+    private lateinit var locationManager: LocationManager
+    private val gpsDrive = GpsDrive()
+    private var gpsListening = false
+    private var gpsHadFix = false
+    private val realMode: Boolean get() = demoMode >= 3
+    private val gpsListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            if (!gpsListening || !realMode || engine == null) return
+            if (!location.hasSpeed() || location.isFromMockProvider || !location.hasAccuracy() ||
+                location.accuracy > 35f || !location.accuracy.isFinite() ||
+                location.hasSpeedAccuracy() && (location.speedAccuracyMetersPerSecond > 2f || !location.speedAccuracyMetersPerSecond.isFinite())) return
+            gpsDrive.acceptSpeed(location.speed.toDouble() * 3.6, location.elapsedRealtimeNanos, SystemClock.elapsedRealtimeNanos())
+        }
+        override fun onProviderDisabled(provider: String) {
+            if (gpsListening) stopEngine("GPS ปิดอยู่ · หยุดเสียง")
+        }
+        override fun onProviderEnabled(provider: String) = Unit
+        @Suppress("DEPRECATION")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+    }
     private var engine: EngineSound? = null
     private var focus: AudioFocusRequest? = null
     private var profile = profiles[0]
@@ -74,7 +101,37 @@ class MainActivity : Activity() {
             val now = SystemClock.elapsedRealtimeNanos()
             val dt = if (lastTick == 0L) .05 else ((now - lastTick) / 1e9).coerceIn(0.0, .1)
             lastTick = now
-            if (demoMode == 0) {
+            if (realMode) {
+                val frame = gpsDrive.frame(now, dt, profile.limit, demoMode == 4)
+                if (frame == null) {
+                    sound.muted = true
+                    if (gpsHadFix) {
+                        sound.report(EngineReading(0, 0, 0, null, 0, 0, now))
+                        turboTrigger.reset()
+                    }
+                    gpsHadFix = false
+                    status.text = "WAIT GPS · ไม่มีข้อมูลความเร็ว / ปิดเสียง"
+                    rpmLabel.text = "— RPM"
+                    gearLabel.text = "GPS SPEED — km/h"
+                    throttleLabel.text = "โหลดโดยประมาณ —"
+                } else {
+                    gpsHadFix = true
+                    rpm = frame.rpm
+                    val shift = when (frame.shift) {
+                        VirtualDrive.Shift.UP -> " · UPSHIFT"
+                        VirtualDrive.Shift.DOWN -> " · DOWNSHIFT"
+                        VirtualDrive.Shift.NONE -> ""
+                    }
+                    status.text = "GPS LIVE · READ ONLY"
+                    rpmLabel.text = "${rpm.roundToInt()} RPM"
+                    gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h (GPS)$shift"
+                    throttleLabel.text = "โหลดโดยประมาณ  ${frame.estimatedPedal}%"
+                    sound.report(EngineReading(rpm.roundToInt(), frame.speedKmh.roundToInt(), frame.gear,
+                        null, frame.load, frame.throttle, now))
+                    sound.muted = false
+                    if (turboTrigger.advance(frame.estimatedPedal, frame.gear, rpm)) sound.requestBlowOff()
+                }
+            } else if (demoMode == 0) {
                 val target = 900 + (profile.limit - 900) * (pedal / 100.0)
                 val rate = if (target > rpm) 4200.0 else 2400.0
                 rpm += (target - rpm).coerceIn(-rate * dt, rate * dt)
@@ -104,6 +161,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val scroll = ScrollView(this)
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -114,26 +172,43 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 4 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 5 · GPS Real Drive Lab", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
         col.addView(rpmLabel)
         gearLabel = label("GEAR 1  |  0 km/h (จำลอง)", 22, Color.rgb(120, 220, 170))
         col.addView(gearLabel)
-        col.addView(label("DRIVE DEMO", 14, Color.LTGRAY))
-        col.addView(spinner(listOf("Free rev (N)", "Normal · 6-speed", "Sport · 6-speed")) {
+        col.addView(label("DRIVE MODE · ตั้งค่าขณะรถจอด", 14, Color.LTGRAY))
+        col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed")) {
+            if (demoMode != it && engine != null) stopEngine("READY · เปลี่ยนโหมดแล้ว กรุณา Start ใหม่")
             demoMode = it
+            gpsDrive.reset()
             drive.reset()
             turboTrigger.reset()
             pedal = 0
             if (::throttle.isInitialized) throttle.progress = 0
             rpm = 900.0
-            gearLabel.text = if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+            gearLabel.text = if (realMode) "GPS SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+            updateModeControls()
             applySettings()
         }.apply { setSelection(demoMode) })
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        toggle = Button(this).apply {
+            text = "START ENGINE"
+            setOnClickListener { if (engine == null) startEngine() else stopEngine() }
+        }
+        actions.addView(toggle, LinearLayout.LayoutParams(0, dp(64), 1f))
+        releaseButton = Button(this).apply {
+            text = "ปล่อยคันเร่ง"
+            setOnClickListener { if (!realMode) throttle.progress = 0 }
+        }
+        actions.addView(releaseButton, LinearLayout.LayoutParams(0, dp(64), 1f))
+        col.addView(actions)
+        col.addView(label("Real GPS: ใช้ความเร็วเท่านั้น • คันเร่งและเกียร์เป็นค่าจำลอง • ไม่มีการควบคุมรถ", 14, Color.LTGRAY))
         col.addView(label("ENGINE PROFILE", 14, Color.LTGRAY))
         profileSpinner = spinner(profiles.map { it.title }) {
+            if (realMode && engine != null && profile != profiles[it]) stopEngine("READY · เปลี่ยนเครื่องยนต์แล้ว กรุณา Start ใหม่")
             profile = profiles[it]
             rpm = rpm.coerceAtMost(profile.limit.toDouble())
             drive.reset()
@@ -190,14 +265,15 @@ class MainActivity : Activity() {
         val ventLabel = label("Blow-off volume  $blowOffVolume%", 15, Color.LTGRAY)
         col.addView(ventLabel)
         col.addView(seek(100, blowOffVolume) { blowOffVolume = it; ventLabel.text = "Blow-off volume  $it%"; applySettings() })
-        col.addView(Button(this).apply {
+        testButton = Button(this).apply {
             text = "TEST BLOW-OFF / FLUTTER"
             setOnClickListener {
-                if (engine == null || !blowOffEnabled || blowOffVolume == 0) {
+                if (realMode || engine == null || !blowOffEnabled || blowOffVolume == 0) {
                     Toast.makeText(this@MainActivity, "Start Engine และเปิด Blow-off ก่อนทดสอบ", Toast.LENGTH_SHORT).show()
                 } else engine?.requestBlowOff(audition = true)
             }
-        })
+        }
+        col.addView(testButton)
         col.addView(CheckBox(this).apply {
             text = "Pop & Bang · เสียงท่อไอเสีย"
             isChecked = popEnabled
@@ -208,22 +284,30 @@ class MainActivity : Activity() {
         col.addView(popLabel)
         col.addView(seek(100, popVolume) { popVolume = it; popLabel.text = "Pop volume  $it%"; applySettings() })
 
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toggle = Button(this).apply {
-            text = "START ENGINE"
-            setOnClickListener { if (engine == null) startEngine() else stopEngine() }
-        }
-        actions.addView(toggle, LinearLayout.LayoutParams(0, dp(64), 1f))
-        actions.addView(Button(this).apply {
-            text = "ปล่อยคันเร่ง"
-            setOnClickListener { throttle.progress = 0 }
-        }, LinearLayout.LayoutParams(0, dp(64), 1f))
-        col.addView(actions)
-        col.addView(label("ไม่ใช่ AVAS • ไม่ควบคุมรถ • หยุดเสียงเมื่อสลับแอป", 14, Color.LTGRAY))
+        updateModeControls()
+        col.addView(label("ไม่ใช่ AVAS • ไม่ควบคุมรถ • หยุดเสียงเมื่อสลับแอปหรือ GPS ขาดหาย • ไม่บันทึกพิกัด", 14, Color.LTGRAY))
         col.addView(label("Engine synthesis: Revv / Ange Yaghi (engine-sim). GPL-3.0 / MIT.", 12, Color.GRAY))
     }
 
+    private fun updateModeControls() {
+        if (::throttle.isInitialized) throttle.isEnabled = !realMode
+        if (::releaseButton.isInitialized) releaseButton.isEnabled = !realMode
+        if (::testButton.isInitialized) testButton.isEnabled = !realMode
+        if (::throttleLabel.isInitialized) throttleLabel.text = if (realMode) "โหลดโดยประมาณ —" else "คันเร่งจำลอง  $pedal%"
+    }
+
     private fun startEngine() {
+        if (realMode) {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), GPS_PERMISSION)
+                status.text = "อนุญาตตำแหน่งแม่นยำ แล้วกด Start อีกครั้ง"
+                return
+            }
+            if (!runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)) {
+                status.text = "GPS ไม่พร้อม · เปิด Location ก่อน"
+                return
+            }
+        }
         val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
             .setOnAudioFocusChangeListener({ change ->
@@ -239,13 +323,33 @@ class MainActivity : Activity() {
         throttle.progress = 0
         rpm = 900.0
         drive.reset()
+        gpsDrive.reset()
         turboTrigger.reset()
+        gpsHadFix = false
         lastTick = 0
-        engine = EngineSound(applicationContext)
+        engine = EngineSound(applicationContext).also { it.muted = realMode }
+        if (realMode) {
+            try {
+                gpsListening = true
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200L, 0f, gpsListener, Looper.getMainLooper())
+            } catch (_: Exception) {
+                stopEngine("GPS ใช้งานไม่ได้ · กรุณาตรวจสอบสิทธิ์ Location")
+                return
+            }
+        }
         applySettings()
         toggle.text = "STOP ENGINE"
-        status.text = "RUNNING · PARKED SOUND DEMO"
+        status.text = if (realMode) "WAIT GPS · รอความเร็วจริง" else "RUNNING · PARKED SOUND DEMO"
+        updateModeControls()
         handler.post(tick)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == GPS_PERMISSION && realMode && engine == null) {
+            status.text = if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+                "GPS พร้อม · กด Start เพื่อเริ่ม" else "ต้องอนุญาตตำแหน่งแม่นยำสำหรับ Real GPS"
+        }
     }
 
     private fun applySettings() {
@@ -266,12 +370,18 @@ class MainActivity : Activity() {
             blowOffVolume = blowOffVolume,
             turboFlutter = turboFlutter,
             popVolume = popVolume,
-            startUp = true,
+            startUp = !realMode,
         ))
     }
 
     private fun stopEngine(message: String = "READY · หยุดเสียงแล้ว") {
         handler.removeCallbacks(tick)
+        if (gpsListening) {
+            gpsListening = false
+            runCatching { locationManager.removeUpdates(gpsListener) }
+        }
+        gpsHadFix = false
+        gpsDrive.reset()
         engine?.let {
             it.muted = true
             it.release()
@@ -282,10 +392,11 @@ class MainActivity : Activity() {
         if (::toggle.isInitialized) toggle.text = "START ENGINE"
         if (::status.isInitialized) status.text = message
         if (::throttle.isInitialized) throttle.progress = 0
-        if (::rpmLabel.isInitialized) rpmLabel.text = "900 RPM"
+        if (::rpmLabel.isInitialized) rpmLabel.text = if (realMode) "— RPM" else "900 RPM"
         drive.reset()
         turboTrigger.reset()
-        if (::gearLabel.isInitialized) gearLabel.text = if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+        if (::gearLabel.isInitialized) gearLabel.text = if (realMode) "GPS SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+        updateModeControls()
     }
 
     override fun onPause() {
@@ -296,6 +407,8 @@ class MainActivity : Activity() {
         stopEngine()
         super.onDestroy()
     }
+
+    private companion object { const val GPS_PERMISSION = 101 }
 
     private fun dp(n: Int) = (resources.displayMetrics.density * n).roundToInt()
     private fun label(value: String, size: Int, color: Int) = TextView(this).apply {
