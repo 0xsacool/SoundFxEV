@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audioManager: AudioManager
     private lateinit var rpmLabel: TextView
+    private lateinit var gearLabel: TextView
     private lateinit var status: TextView
     private lateinit var throttleLabel: TextView
     private lateinit var throttle: SeekBar
@@ -53,6 +54,9 @@ class MainActivity : Activity() {
     private var bass = 23
     private var fullRange = true
     private var volume = 7
+    private val drive = VirtualDrive()
+    private var demoMode = 2
+    private var turboEnabled = true
     private var pedal = 0
     private var rpm = 900.0
     private var lastTick = 0L
@@ -63,15 +67,27 @@ class MainActivity : Activity() {
             val now = SystemClock.elapsedRealtimeNanos()
             val dt = if (lastTick == 0L) .05 else ((now - lastTick) / 1e9).coerceIn(0.0, .1)
             lastTick = now
-            val target = 900 + (profile.limit - 900) * (pedal / 100.0)
-            val rate = if (target > rpm) 4200.0 else 2400.0
-            rpm += (target - rpm).coerceIn(-rate * dt, rate * dt)
-            val rev = rpm.roundToInt()
-            rpmLabel.text = "$rev RPM"
-            sound.report(EngineReading(
-                rpm = rev, speedKmh = 0, gear = 0, airFill = null,
-                engineLoad = pedal, throttle = pedal, atNanos = now
-            ))
+            if (demoMode == 0) {
+                val target = 900 + (profile.limit - 900) * (pedal / 100.0)
+                val rate = if (target > rpm) 4200.0 else 2400.0
+                rpm += (target - rpm).coerceIn(-rate * dt, rate * dt)
+                rpmLabel.text = "${rpm.roundToInt()} RPM"
+                gearLabel.text = "N · Free rev"
+                sound.report(EngineReading(rpm.roundToInt(), 0, 0, null, pedal, pedal, now))
+            } else {
+                val frame = drive.advance(dt, pedal, profile.limit,
+                    if (demoMode == 2) VirtualDrive.Mode.SPORT else VirtualDrive.Mode.NORMAL)
+                rpm = frame.rpm
+                rpmLabel.text = "${rpm.roundToInt()} RPM"
+                val shift = when (frame.shift) {
+                    VirtualDrive.Shift.UP -> " · UPSHIFT"
+                    VirtualDrive.Shift.DOWN -> " · DOWNSHIFT"
+                    VirtualDrive.Shift.NONE -> ""
+                }
+                gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h (จำลอง)$shift"
+                sound.report(EngineReading(rpm.roundToInt(), frame.speedKmh.roundToInt(), frame.gear,
+                    null, frame.load, frame.throttle, now))
+            }
             handler.postDelayed(this, 50L)
         }
     }
@@ -89,15 +105,28 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 2 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 3 · ทดสอบเสียงขณะรถจอดเท่านั้น", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
         col.addView(rpmLabel)
+        gearLabel = label("GEAR 1  |  0 km/h (จำลอง)", 22, Color.rgb(120, 220, 170))
+        col.addView(gearLabel)
+        col.addView(label("DRIVE DEMO", 14, Color.LTGRAY))
+        col.addView(spinner(listOf("Free rev (N)", "Normal · 6-speed", "Sport · 6-speed")) {
+            demoMode = it
+            drive.reset()
+            pedal = 0
+            if (::throttle.isInitialized) throttle.progress = 0
+            rpm = 900.0
+            gearLabel.text = if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+            applySettings()
+        }.apply { setSelection(demoMode) })
         col.addView(label("ENGINE PROFILE", 14, Color.LTGRAY))
         profileSpinner = spinner(profiles.map { it.title }) {
             profile = profiles[it]
             rpm = rpm.coerceAtMost(profile.limit.toDouble())
+            drive.reset()
             applySettings()
         }
         col.addView(profileSpinner)
@@ -130,6 +159,13 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> fullRange = checked; applySettings() }
         })
 
+        col.addView(CheckBox(this).apply {
+            text = "Turbo spool + Blow-off"
+            isChecked = turboEnabled
+            setTextColor(Color.LTGRAY)
+            setOnCheckedChangeListener { _, checked -> turboEnabled = checked; applySettings() }
+        })
+
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toggle = Button(this).apply {
             text = "START ENGINE"
@@ -160,11 +196,12 @@ class MainActivity : Activity() {
         pedal = 0
         throttle.progress = 0
         rpm = 900.0
+        drive.reset()
         lastTick = 0
         engine = EngineSound(applicationContext)
         applySettings()
         toggle.text = "STOP ENGINE"
-        status.text = "RUNNING · MANUAL DEMO"
+        status.text = "RUNNING · PARKED SOUND DEMO"
         handler.post(tick)
     }
 
@@ -179,7 +216,8 @@ class MainActivity : Activity() {
             deepTone = tone.deep,
             forceFullRange = fullRange,
             surround = false,
-            smoothing = 8,
+            smoothing = if (demoMode == 0) 8 else 2,
+            turboEnabled = turboEnabled,
             startUp = true,
         ))
     }
@@ -197,6 +235,8 @@ class MainActivity : Activity() {
         if (::status.isInitialized) status.text = message
         if (::throttle.isInitialized) throttle.progress = 0
         if (::rpmLabel.isInitialized) rpmLabel.text = "900 RPM"
+        drive.reset()
+        if (::gearLabel.isInitialized) gearLabel.text = if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
     }
 
     override fun onPause() {

@@ -36,6 +36,7 @@ data class EngineSoundSettings(
     val deepTone: Boolean = false,
     /** Avoid the phone-speaker high-pass on a BYD unit whose routed audio is misidentified. */
     val forceFullRange: Boolean = false,
+    val turboEnabled: Boolean = false,
 ) {
     /**
      * The volume as a gain, on a curve so each step sounds about as big as the last. The top
@@ -219,6 +220,7 @@ class EngineSound(private val context: Context) {
             val settings = settings
             configure(settings)
             synth.surround = settings.surround
+            synth.turboEnabled = settings.turboEnabled
             follower.smoothing = settings.smoothingFraction
             follower.startUp = settings.startUp
             val clip = if (settings.startUp) startClip else null
