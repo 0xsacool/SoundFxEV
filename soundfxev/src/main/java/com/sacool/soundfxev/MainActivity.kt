@@ -25,7 +25,7 @@ import com.vivekkaushik.revv.engine.ExhaustNote
 import kotlin.math.roundToInt
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.lang.reflect.InvocationTargetException
+import java.net.SocketTimeoutException
 
 /** Foreground-only sound lab; GPS speed is read locally, never recorded or sent. */
 class MainActivity : Activity() {
@@ -56,6 +56,13 @@ class MainActivity : Activity() {
     private lateinit var toggle: Button
     private lateinit var profileSpinner: Spinner
     private lateinit var releaseButton: Button
+    private lateinit var linkButton: Button
+    private var authSession: BydAdbSession? = null
+    private var authTask: Future<*>? = null
+    private var bydSession: BydAdbSession? = null
+    private var linkAuthorized = false
+    private var linkAuthorizing = false
+    private var destroyed = false
     private lateinit var testButton: Button
     private lateinit var locationManager: LocationManager
     private val gpsDrive = GpsDrive()
@@ -63,7 +70,7 @@ class MainActivity : Activity() {
     private val bydMode: Boolean get() = demoMode >= 5
     private val gpsMode: Boolean get() = demoMode in 3..4
     private val realDrive: GpsDrive get() = if (bydMode) bydDrive else gpsDrive
-    private val sourceName: String get() = if (bydMode) "BYD" else "GPS"
+    private val sourceName: String get() = if (bydMode) "BYD LINK" else "GPS"
     // The worker never blocks UI/audio; a cancelled session cannot publish stale data.
     private val bydExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "BydReadOnly").apply { isDaemon = true } }
     private var bydTask: Future<*>? = null
@@ -134,7 +141,7 @@ class MainActivity : Activity() {
                         VirtualDrive.Shift.DOWN -> " · DOWNSHIFT"
                         VirtualDrive.Shift.NONE -> ""
                     }
-                    status.text = if (bydMode) "BYD LIVE · SPEED + PEDAL" else "GPS LIVE · READ ONLY"
+                    status.text = if (bydMode) "BYD LINK LIVE · SPEED + PEDAL" else "GPS LIVE · READ ONLY"
                     rpmLabel.text = "${rpm.roundToInt()} RPM"
                     gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h ($sourceName)$shift"
                     throttleLabel.text = if (bydMode) "คันเร่งจริง BYD  ${frame.estimatedPedal}%" else "โหลดโดยประมาณ  ${frame.estimatedPedal}%"
@@ -184,7 +191,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 6 · GPS / BYD Pedal", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 7 · GPS / Vehicle Data Link", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
@@ -192,7 +199,7 @@ class MainActivity : Activity() {
         gearLabel = label("GEAR 1  |  0 km/h (จำลอง)", 22, Color.rgb(120, 220, 170))
         col.addView(gearLabel)
         col.addView(label("DRIVE MODE · ตั้งค่าขณะรถจอด", 14, Color.LTGRAY))
-        col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed", "REAL BYD Pedal Normal · 6-speed", "REAL BYD Pedal Sport · 6-speed")) {
+        col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed", "BYD LINK Pedal Normal · 6-speed", "BYD LINK Pedal Sport · 6-speed")) {
             if (demoMode != it && engine != null) stopEngine("READY · เปลี่ยนโหมดแล้ว กรุณา Start ใหม่")
             demoMode = it
             gpsDrive.reset()
@@ -218,7 +225,13 @@ class MainActivity : Activity() {
         }
         actions.addView(releaseButton, LinearLayout.LayoutParams(0, dp(64), 1f))
         col.addView(actions)
-        col.addView(label("GPS: คำนวณโหลดจากความเร็ว | BYD: อ่านความเร็วและคันเร่งจริง (ทดลอง) • เกียร์จำลองทั้งคู่", 14, Color.LTGRAY))
+        linkButton = Button(this).apply {
+            text = "AUTHORIZE VEHICLE DATA LINK (ADB)"
+            setOnClickListener { authorizeVehicleLink() }
+        }
+        col.addView(linkButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        col.addView(label("BYD LINK: เปิด Network ADB ที่รถแล้วกด AUTHORIZE ขณะจอดรถ • อนุญาตบนจอรถ • อ่านคันเร่ง/ความเร็วเท่านั้น", 14, Color.LTGRAY))
+        col.addView(label("GPS: คำนวณโหลดจากความเร็ว • เกียร์จำลองทั้งคู่", 14, Color.LTGRAY))
         col.addView(label("ENGINE PROFILE", 14, Color.LTGRAY))
         profileSpinner = spinner(profiles.map { it.title }) {
             if (realMode && engine != null && profile != profiles[it]) stopEngine("READY · เปลี่ยนเครื่องยนต์แล้ว กรุณา Start ใหม่")
@@ -306,6 +319,14 @@ class MainActivity : Activity() {
         if (::throttle.isInitialized) throttle.isEnabled = !realMode
         if (::releaseButton.isInitialized) releaseButton.isEnabled = !realMode
         if (::testButton.isInitialized) testButton.isEnabled = !realMode
+        if (::linkButton.isInitialized) {
+            linkButton.isEnabled = bydMode && engine == null && !linkAuthorizing
+            linkButton.text = when {
+                linkAuthorizing -> "WAITING FOR ADB APPROVAL"
+                linkAuthorized -> "VEHICLE LINK AUTHORIZED · RECHECK"
+                else -> "AUTHORIZE VEHICLE DATA LINK (ADB)"
+            }
+        }
         if (::throttleLabel.isInitialized) throttleLabel.text = when {
             bydMode -> "คันเร่งจริง BYD —"
             gpsMode -> "โหลดโดยประมาณ —"
@@ -314,6 +335,10 @@ class MainActivity : Activity() {
     }
 
     private fun startEngine() {
+        if (bydMode && (!linkAuthorized || linkAuthorizing)) {
+            status.text = "กด AUTHORIZE VEHICLE DATA LINK ก่อน"
+            return
+        }
         if (gpsMode) {
             if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), GPS_PERMISSION)
@@ -371,42 +396,67 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Explicit user action; this only authenticates to local ADB, no vehicle data is read yet. */
+    private fun authorizeVehicleLink() {
+        if (!bydMode || engine != null || linkAuthorizing || destroyed) return
+        linkAuthorizing = true
+        linkAuthorized = false
+        status.text = "ADB AUTH · อนุญาตการดีบักบนหน้าจอรถ"
+        updateModeControls()
+        val session = BydAdbSession(applicationContext)
+        authSession = session
+        authTask = bydExecutor.submit {
+            val result = runCatching { session.authorize() }
+            handler.post {
+                if (destroyed || authSession !== session) return@post
+                authSession = null
+                authTask = null
+                linkAuthorizing = false
+                linkAuthorized = result.isSuccess
+                if (bydMode && engine == null) {
+                    status.text = if (linkAuthorized) "ADB AUTHORIZED · กด START ENGINE"
+                    else when (val e = result.exceptionOrNull()) {
+                        is SocketTimeoutException -> "ADB รออนุญาตหมดเวลา · กด AUTHORIZE ใหม่"
+                        is BydAdbSession.LinkException -> e.message ?: "ADB ไม่พร้อม"
+                        else -> "ADB เชื่อมต่อไม่ได้ · ตรวจสอบ Network ADB"
+                    }
+                }
+                updateModeControls()
+            }
+        }
+    }
+
     private fun startBydReader() {
         val generation = ++bydGeneration
-        val ctx = applicationContext
+        val session = BydAdbSession(applicationContext)
+        bydSession = session
         bydTask = bydExecutor.submit {
             try {
-                val reader = BydPedalReader.open(ctx)
-                while (!Thread.currentThread().isInterrupted && generation == bydGeneration) {
-                    val startedAt = SystemClock.elapsedRealtimeNanos()
-                    val sample = reader.read()
-                    val at = SystemClock.elapsedRealtimeNanos()
-                    // Do not publish a slow getter result as if it were fresh.
-                    if (sample != null && at - startedAt <= 300_000_000L) {
-                        handler.post {
-                            if (generation == bydGeneration && bydMode && engine != null)
-                                bydDrive.acceptSpeed(sample.speedKmh, at, SystemClock.elapsedRealtimeNanos(), sample.pedalPercent)
-                        }
+                session.stream { sample ->
+                    handler.post {
+                        if (generation == bydGeneration && bydMode && engine != null)
+                            bydDrive.acceptSpeed(sample.speedKmh, sample.atNanos,
+                                SystemClock.elapsedRealtimeNanos(), sample.pedal)
                     }
-                    Thread.sleep(100L)
                 }
-            } catch (_: InterruptedException) {
-                // Mode switched, stopped, or left foreground.
+                handler.post {
+                    if (generation == bydGeneration && bydMode && engine != null)
+                        stopEngine("BYD LINK สิ้นสุด · หยุดเสียง")
+                }
             } catch (e: Exception) {
-                val cause = if (e is InvocationTargetException) e.targetException else e
                 handler.post {
                     if (generation == bydGeneration && bydMode && engine != null) {
-                        val message = if (cause is SecurityException)
-                            "BYD API ไม่อนุญาตสิทธิ์ · เลือก GPS"
-                        else "BYD API คันเร่ง/ความเร็วไม่พร้อม · เลือก GPS"
+                        linkAuthorized = false
+                        val message = when (e) {
+                            is SocketTimeoutException -> "BYD LINK ไม่ตอบกลับ · ตรวจสอบ ADB"
+                            is BydAdbSession.LinkException -> e.message ?: "BYD LINK ไม่พร้อม"
+                            else -> "BYD LINK ขาดการเชื่อมต่อ"
+                        }
                         stopEngine(message)
                     }
                 }
-            } catch (_: LinkageError) {
-                handler.post {
-                    if (generation == bydGeneration && bydMode && engine != null)
-                        stopEngine("BYD SDK ไม่รองรับเฟิร์มแวร์นี้ · เลือก GPS")
-                }
+            } finally {
+                session.close()
             }
         }
     }
@@ -436,6 +486,8 @@ class MainActivity : Activity() {
     private fun stopEngine(message: String = "READY · หยุดเสียงแล้ว") {
         handler.removeCallbacks(tick)
         bydGeneration++
+        bydSession?.close()
+        bydSession = null
         bydTask?.cancel(true)
         bydTask = null
         if (gpsListening) {
@@ -467,6 +519,10 @@ class MainActivity : Activity() {
         super.onPause()
     }
     override fun onDestroy() {
+        destroyed = true
+        authSession?.close()
+        authSession = null
+        authTask?.cancel(true)
         stopEngine()
         bydExecutor.shutdownNow()
         super.onDestroy()

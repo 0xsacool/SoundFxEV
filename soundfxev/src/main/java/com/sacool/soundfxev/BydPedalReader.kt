@@ -23,7 +23,7 @@ internal class BydPedalReader private constructor(
         fun open(context: Context): BydPedalReader {
             val cls = Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
             val device = try {
-                cls.getMethod("getInstance", Context::class.java).invoke(null, context.applicationContext)
+                cls.getMethod("getInstance", Context::class.java).invoke(null, context.applicationContext ?: context)
             } catch (_: NoSuchMethodException) {
                 cls.getMethod("getInstance").invoke(null)
             } ?: error("BYD speed device unavailable")
