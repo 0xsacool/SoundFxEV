@@ -87,6 +87,7 @@ class EngineSynthTest {
         val idle = level(EngineState(900.0, 0.03, overrun = false, running = true))
         val accelerating = level(EngineState(3500.0, 0.8, overrun = false, running = true))
         val legacy = level(EngineState(3500.0, 0.03, overrun = true, running = true), live = false)
+        println("Coast RMS: new=$coast previous=$legacy idle=$idle accelerating=$accelerating")
         assertTrue("coast $coast vs legacy $legacy", coast > legacy * 1.5)
         assertTrue("coast $coast must remain audible relative to idle $idle", coast > idle * 0.45)
         assertTrue("coast $coast must remain below acceleration $accelerating", coast < accelerating)

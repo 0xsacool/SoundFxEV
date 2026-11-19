@@ -26,6 +26,19 @@ jobs:
           cache-provider: basic
       - name: Test DSP and assemble
         run: ./gradlew -p soundfxev testDebugUnitTest assembleDebug --stacktrace
+      - name: Report DSP results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for path in glob.glob('soundfxev/build/test-results/testDebugUnitTest/TEST-*.xml'):
+              root = ET.parse(path).getroot()
+              for failure in root.findall('.//failure'):
+                  print(failure.get('message'))
+              for line in (root.findtext('system-out') or '').splitlines():
+                  if 'Coast RMS:' in line:
+                      print(line)
+          PY
       - name: Prepare APK
         run: cp "$(find soundfxev/build/outputs/apk/debug -name '*.apk' -print -quit)" SoundFxEV-0.1.0-alpha.7.2.apk
       - uses: actions/upload-artifact@v4

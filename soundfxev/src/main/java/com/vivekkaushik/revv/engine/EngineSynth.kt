@@ -260,6 +260,7 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         } else 0.0
         val closedThrottle = 1.0 - (toLoad / COAST_OPEN_LOAD).coerceIn(0.0, 1.0)
         val toAcousticLoad = max(toLoad, COAST_PULSE_LOAD * coast)
+        val coastBody = coast * closedThrottle
         val turboRunning = state.running && state.starter == 0.0 && (turboEnabled || blowOffEnabled)
         turboFx.setTarget(toRpm, toLoad, turboRunning)
         if (!blowOffEnabled) turboFx.cancelVent()
@@ -317,11 +318,12 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val small = smallSpeaker
         val overtones = HARMONICS * bassDb / MAX_BASS_DB
         // The firing note and the hiss don't come through the recording, so its loudness is no business of theirs.
-        val bodyGain = OUTPUT_GAIN * BODY * (0.5 + bassDb / MAX_BASS_DB) * (if (deepTone) 1.15 else 1.0)
+        val bodyGain = OUTPUT_GAIN * BODY * (0.5 + bassDb / MAX_BASS_DB) * (if (deepTone) 1.15 else 1.0) *
+            (1.0 + COAST_BODY_GAIN * coastBody)
         // Jet noise grows steeply with how fast the gas leaves: a whisper at idle, a rasp flat out.
         val flow = sqrt(toLoad * toRpm / CRUISE_FLOW).coerceIn(MIN_HISS, MAX_HISS)
         // Mostly the throttle: a big engine flaring as it catches still sounds deep, blipped it barks.
-        val effort = (toLoad * toLoad * sqrt(toRpm / OPEN_RPM)).coerceIn(0.0, 1.0)
+        val effort = (toLoad * toLoad * sqrt(toRpm / OPEN_RPM) + COAST_MUFFLER_EFFORT * coastBody).coerceIn(0.0, 1.0)
         val openHz = if (deepTone) 2800.0 else OPEN_HZ
         muffleHz += (MUFFLED_HZ * (openHz / MUFFLED_HZ).pow(effort) - muffleHz) * MUFFLE_STEP
         muffleMid.open(muffleHz)
@@ -721,6 +723,8 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         private const val COAST_PULSE_LOAD = 0.48
         private const val COAST_OPEN_LOAD = 0.35
         private const val COAST_DUCK = 0.10
+        private const val COAST_BODY_GAIN = 2.0
+        private const val COAST_MUFFLER_EFFORT = 0.20
         private const val LEGACY_OVERRUN_LEVEL = 0.5
         private const val DUCK_STEP = 0.05
 
