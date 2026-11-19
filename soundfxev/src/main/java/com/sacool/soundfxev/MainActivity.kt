@@ -194,7 +194,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 7.1 · BYD SDK Diagnostic", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 7.2 · Coast Audio / BYD Diagnostic", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)

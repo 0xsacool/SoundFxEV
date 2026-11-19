@@ -51,6 +51,45 @@ class EngineSynthTest {
     }
 
     @Test
+    fun overrunFlagDoesNotChangeCabinLevelAtTheSameRpm() {
+        // In GPS mode the follower ends overrun near 1500 rpm. No gain step should
+        // occur when only this flag changes (pops and turbo deliberately disabled).
+        val state = EngineState(1500.0, 0.03, overrun = true, running = true)
+        val coast = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state, 1.5, crackle = false)
+        val normal = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state.copy(overrun = false), 1.5, crackle = false)
+        assertEquals(rms(normal), rms(coast), rms(normal) * 0.01)
+    }
+
+    @Test
+    fun closedThrottleRetainsAudibleExhaustAtRoadRpm() {
+        val note = ExhaustNote.SPORT
+        val impulse = ImpulseResponse.read(File("src/main/assets/" + note.impulse).readBytes())
+        fun level(state: EngineState): Double {
+            val synth = EngineSynth().apply {
+                configure(EngineLayout.INLINE_6, note, impulse, crackle = false,
+                    bass = EngineSynth.MAX_BASS_DB * 23 / 30, deep = true)
+                surround = false
+            }
+            val block = FloatArray(EngineSynth.BLOCK * EngineSynth.CHANNELS)
+            val gain = 2.0 * (7.0 / 30) * (7.0 / 30)
+            repeat(150) { synth.render(block, state, gain) }
+            var power = 0.0
+            repeat(100) {
+                synth.render(block, state, gain)
+                val level = rms(block)
+                power += level * level
+                assertTrue(block.all { it.isFinite() && abs(it) < 1f })
+            }
+            return sqrt(power / 100)
+        }
+        val coast = level(EngineState(3500.0, 0.03, overrun = true, running = true))
+        val idle = level(EngineState(900.0, 0.03, overrun = false, running = true))
+        val accelerating = level(EngineState(3500.0, 0.8, overrun = false, running = true))
+        assertTrue("coast $coast must remain audible relative to idle $idle", coast > idle * 0.65)
+        assertTrue("coast $coast must remain below acceleration $accelerating", coast < accelerating)
+    }
+
+    @Test
     fun pulsesComeOncePerFiring() {
         // Four cylinders at 3,000 rpm fire 100 times a second; six at 4,000 rpm 200 times.
         assertEquals(441.0, strongestPeriod(EngineLayout.INLINE_4, 3000.0), 4.0)

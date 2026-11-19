@@ -131,7 +131,7 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
 
     private var crank = 0.0
     private var rpm = 0.0
-    private var load = 0.0
+    private var acousticLoad = 0.0
     private var gain = 0.0
     private var overrunSeconds = 0.0
 
@@ -246,10 +246,17 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val convolverMid = convolverMid ?: error("Not configured")
         val convolverWidth = convolverWidth ?: error("Not configured")
         val fromRpm = rpm
-        val fromLoad = load
+        val fromLoad = acousticLoad
         val fromGain = gain
         val toRpm = state.rpm.coerceIn(0.0, MAX_RPM)
         val toLoad = state.load.coerceIn(0.0, MAX_LOAD)
+        // Keep exhaust pulses audible on a closed throttle without inventing turbo boost.
+        // The floor falls smoothly back to the untouched idle/starting sound.
+        val coast = if (state.running && state.starter == 0.0) {
+            val t = ((toRpm - COAST_IDLE_RPM) / (COAST_FULL_RPM - COAST_IDLE_RPM)).coerceIn(0.0, 1.0)
+            t * t * (3.0 - 2.0 * t)
+        } else 0.0
+        val toAcousticLoad = max(toLoad, COAST_PULSE_LOAD * coast)
         val turboRunning = state.running && state.starter == 0.0 && (turboEnabled || blowOffEnabled)
         turboFx.setTarget(toRpm, toLoad, turboRunning)
         if (!blowOffEnabled) turboFx.cancelVent()
@@ -271,11 +278,11 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         for (n in 0 until BLOCK) {
             val t = (n + 1).toDouble() / BLOCK
             val rpm = fromRpm + (toRpm - fromRpm) * t
-            val load = fromLoad + (toLoad - fromLoad) * t
+            val load = fromLoad + (toAcousticLoad - fromLoad) * t
             sample(n, rpm, load, popChance, fromStarter + (toStarter - fromStarter) * t)
         }
         rpm = toRpm
-        load = toLoad
+        acousticLoad = toAcousticLoad
         starter = toStarter
 
         convolverMid.process(mixedMid, convolvedMid)
@@ -321,9 +328,11 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val crackGain = loudness * CRACK
         // Under the bonnet rather than out of the tailpipe: none of it goes through the exhaust.
         val starterGain = OUTPUT_GAIN * STARTER
-        // Lifting off, the engine drops back, as it does with the throttle shut, and leaves room for the pops.
+        // Ease the cabin level with real load and rpm, not the binary overrun flag.
+        // This avoids a sudden volume recovery when overrun ends near idle.
         val fromDuck = duck
-        val toDuck = if (state.overrun) OVERRUN_LEVEL else 1.0
+        val closedThrottle = 1.0 - (toLoad / COAST_OPEN_LOAD).coerceIn(0.0, 1.0)
+        val toDuck = 1.0 - COAST_DUCK * coast * closedThrottle
         duck = fromDuck + (toDuck - fromDuck) * DUCK_STEP
         var power = 0.0
         for (n in 0 until BLOCK) {
@@ -703,8 +712,12 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         /** Blocks the crack's echoes last after a pop: the exhaust recording's length and a little. */
         private const val CRACK_RING_BLOCKS = ImpulseResponse.MAX_SAMPLES / BLOCK + 2
 
-        /** How far the engine drops back with the throttle shut at revs, and how quickly, per block. */
-        private const val OVERRUN_LEVEL = 0.5
+        /** Closed-throttle exhaust body and cabin level fade continuously between idle and road rpm. */
+        private const val COAST_IDLE_RPM = 900.0
+        private const val COAST_FULL_RPM = 3200.0
+        private const val COAST_PULSE_LOAD = 0.20
+        private const val COAST_OPEN_LOAD = 0.35
+        private const val COAST_DUCK = 0.10
         private const val DUCK_STEP = 0.05
 
         /** The bang a few times above the thump, shorter, for speakers too small for the thump. */
