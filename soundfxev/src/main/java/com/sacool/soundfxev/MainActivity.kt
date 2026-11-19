@@ -23,6 +23,9 @@ import com.vivekkaushik.revv.engine.EngineSound
 import com.vivekkaushik.revv.engine.EngineSoundSettings
 import com.vivekkaushik.revv.engine.ExhaustNote
 import kotlin.math.roundToInt
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.lang.reflect.InvocationTargetException
 
 /** Foreground-only sound lab; GPS speed is read locally, never recorded or sent. */
 class MainActivity : Activity() {
@@ -56,12 +59,21 @@ class MainActivity : Activity() {
     private lateinit var testButton: Button
     private lateinit var locationManager: LocationManager
     private val gpsDrive = GpsDrive()
+    private val bydDrive = GpsDrive(maxAgeNanos = 800_000_000L)
+    private val bydMode: Boolean get() = demoMode >= 5
+    private val gpsMode: Boolean get() = demoMode in 3..4
+    private val realDrive: GpsDrive get() = if (bydMode) bydDrive else gpsDrive
+    private val sourceName: String get() = if (bydMode) "BYD" else "GPS"
+    // The worker never blocks UI/audio; a cancelled session cannot publish stale data.
+    private val bydExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "BydReadOnly").apply { isDaemon = true } }
+    private var bydTask: Future<*>? = null
+    @Volatile private var bydGeneration = 0
     private var gpsListening = false
     private var gpsHadFix = false
     private val realMode: Boolean get() = demoMode >= 3
     private val gpsListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
-            if (!gpsListening || !realMode || engine == null) return
+            if (!gpsListening || !gpsMode || engine == null) return
             if (!location.hasSpeed() || location.isFromMockProvider || !location.hasAccuracy() ||
                 location.accuracy > 35f || !location.accuracy.isFinite() ||
                 location.hasSpeedAccuracy() && (location.speedAccuracyMetersPerSecond > 2f || !location.speedAccuracyMetersPerSecond.isFinite())) return
@@ -102,7 +114,7 @@ class MainActivity : Activity() {
             val dt = if (lastTick == 0L) .05 else ((now - lastTick) / 1e9).coerceIn(0.0, .1)
             lastTick = now
             if (realMode) {
-                val frame = gpsDrive.frame(now, dt, profile.limit, demoMode == 4)
+                val frame = realDrive.frame(now, dt, profile.limit, demoMode == 4 || demoMode == 6)
                 if (frame == null) {
                     sound.muted = true
                     if (gpsHadFix) {
@@ -110,10 +122,10 @@ class MainActivity : Activity() {
                         turboTrigger.reset()
                     }
                     gpsHadFix = false
-                    status.text = "WAIT GPS · ไม่มีข้อมูลความเร็ว / ปิดเสียง"
+                    status.text = "WAIT $sourceName · ไม่มีข้อมูล / ปิดเสียง"
                     rpmLabel.text = "— RPM"
-                    gearLabel.text = "GPS SPEED — km/h"
-                    throttleLabel.text = "โหลดโดยประมาณ —"
+                    gearLabel.text = "$sourceName SPEED — km/h"
+                    throttleLabel.text = if (bydMode) "คันเร่งจริง BYD —" else "โหลดโดยประมาณ —"
                 } else {
                     gpsHadFix = true
                     rpm = frame.rpm
@@ -122,10 +134,10 @@ class MainActivity : Activity() {
                         VirtualDrive.Shift.DOWN -> " · DOWNSHIFT"
                         VirtualDrive.Shift.NONE -> ""
                     }
-                    status.text = "GPS LIVE · READ ONLY"
+                    status.text = if (bydMode) "BYD LIVE · SPEED + PEDAL" else "GPS LIVE · READ ONLY"
                     rpmLabel.text = "${rpm.roundToInt()} RPM"
-                    gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h (GPS)$shift"
-                    throttleLabel.text = "โหลดโดยประมาณ  ${frame.estimatedPedal}%"
+                    gearLabel.text = "GEAR ${frame.gear}  |  ${frame.speedKmh.roundToInt()} km/h ($sourceName)$shift"
+                    throttleLabel.text = if (bydMode) "คันเร่งจริง BYD  ${frame.estimatedPedal}%" else "โหลดโดยประมาณ  ${frame.estimatedPedal}%"
                     sound.report(EngineReading(rpm.roundToInt(), frame.speedKmh.roundToInt(), frame.gear,
                         null, frame.load, frame.throttle, now))
                     sound.muted = false
@@ -172,7 +184,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 5 · GPS Real Drive Lab", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 6 · GPS / BYD Pedal", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
@@ -180,16 +192,17 @@ class MainActivity : Activity() {
         gearLabel = label("GEAR 1  |  0 km/h (จำลอง)", 22, Color.rgb(120, 220, 170))
         col.addView(gearLabel)
         col.addView(label("DRIVE MODE · ตั้งค่าขณะรถจอด", 14, Color.LTGRAY))
-        col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed")) {
+        col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed", "REAL BYD Pedal Normal · 6-speed", "REAL BYD Pedal Sport · 6-speed")) {
             if (demoMode != it && engine != null) stopEngine("READY · เปลี่ยนโหมดแล้ว กรุณา Start ใหม่")
             demoMode = it
             gpsDrive.reset()
+            bydDrive.reset()
             drive.reset()
             turboTrigger.reset()
             pedal = 0
             if (::throttle.isInitialized) throttle.progress = 0
             rpm = 900.0
-            gearLabel.text = if (realMode) "GPS SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+            gearLabel.text = if (realMode) "$sourceName SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
             updateModeControls()
             applySettings()
         }.apply { setSelection(demoMode) })
@@ -205,7 +218,7 @@ class MainActivity : Activity() {
         }
         actions.addView(releaseButton, LinearLayout.LayoutParams(0, dp(64), 1f))
         col.addView(actions)
-        col.addView(label("Real GPS: ใช้ความเร็วเท่านั้น • คันเร่งและเกียร์เป็นค่าจำลอง • ไม่มีการควบคุมรถ", 14, Color.LTGRAY))
+        col.addView(label("GPS: คำนวณโหลดจากความเร็ว | BYD: อ่านความเร็วและคันเร่งจริง (ทดลอง) • เกียร์จำลองทั้งคู่", 14, Color.LTGRAY))
         col.addView(label("ENGINE PROFILE", 14, Color.LTGRAY))
         profileSpinner = spinner(profiles.map { it.title }) {
             if (realMode && engine != null && profile != profiles[it]) stopEngine("READY · เปลี่ยนเครื่องยนต์แล้ว กรุณา Start ใหม่")
@@ -285,7 +298,7 @@ class MainActivity : Activity() {
         col.addView(seek(100, popVolume) { popVolume = it; popLabel.text = "Pop volume  $it%"; applySettings() })
 
         updateModeControls()
-        col.addView(label("ไม่ใช่ AVAS • ไม่ควบคุมรถ • หยุดเสียงเมื่อสลับแอปหรือ GPS ขาดหาย • ไม่บันทึกพิกัด", 14, Color.LTGRAY))
+        col.addView(label("ไม่ใช่ AVAS • ไม่ควบคุมรถ • หยุดเสียงเมื่อสลับแอปหรือข้อมูลขาดหาย • ไม่บันทึกพิกัด", 14, Color.LTGRAY))
         col.addView(label("Engine synthesis: Revv / Ange Yaghi (engine-sim). GPL-3.0 / MIT.", 12, Color.GRAY))
     }
 
@@ -293,11 +306,15 @@ class MainActivity : Activity() {
         if (::throttle.isInitialized) throttle.isEnabled = !realMode
         if (::releaseButton.isInitialized) releaseButton.isEnabled = !realMode
         if (::testButton.isInitialized) testButton.isEnabled = !realMode
-        if (::throttleLabel.isInitialized) throttleLabel.text = if (realMode) "โหลดโดยประมาณ —" else "คันเร่งจำลอง  $pedal%"
+        if (::throttleLabel.isInitialized) throttleLabel.text = when {
+            bydMode -> "คันเร่งจริง BYD —"
+            gpsMode -> "โหลดโดยประมาณ —"
+            else -> "คันเร่งจำลอง  $pedal%"
+        }
     }
 
     private fun startEngine() {
-        if (realMode) {
+        if (gpsMode) {
             if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), GPS_PERMISSION)
                 status.text = "อนุญาตตำแหน่งแม่นยำ แล้วกด Start อีกครั้ง"
@@ -324,11 +341,12 @@ class MainActivity : Activity() {
         rpm = 900.0
         drive.reset()
         gpsDrive.reset()
+        bydDrive.reset()
         turboTrigger.reset()
         gpsHadFix = false
         lastTick = 0
         engine = EngineSound(applicationContext).also { it.muted = realMode }
-        if (realMode) {
+        if (gpsMode) {
             try {
                 gpsListening = true
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200L, 0f, gpsListener, Looper.getMainLooper())
@@ -337,18 +355,59 @@ class MainActivity : Activity() {
                 return
             }
         }
+        if (bydMode) startBydReader()
         applySettings()
         toggle.text = "STOP ENGINE"
-        status.text = if (realMode) "WAIT GPS · รอความเร็วจริง" else "RUNNING · PARKED SOUND DEMO"
+        status.text = if (realMode) "WAIT $sourceName · รอข้อมูลจริง" else "RUNNING · PARKED SOUND DEMO"
         updateModeControls()
         handler.post(tick)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == GPS_PERMISSION && realMode && engine == null) {
+        if (requestCode == GPS_PERMISSION && gpsMode && engine == null) {
             status.text = if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
                 "GPS พร้อม · กด Start เพื่อเริ่ม" else "ต้องอนุญาตตำแหน่งแม่นยำสำหรับ Real GPS"
+        }
+    }
+
+    private fun startBydReader() {
+        val generation = ++bydGeneration
+        val ctx = applicationContext
+        bydTask = bydExecutor.submit {
+            try {
+                val reader = BydPedalReader.open(ctx)
+                while (!Thread.currentThread().isInterrupted && generation == bydGeneration) {
+                    val startedAt = SystemClock.elapsedRealtimeNanos()
+                    val sample = reader.read()
+                    val at = SystemClock.elapsedRealtimeNanos()
+                    // Do not publish a slow getter result as if it were fresh.
+                    if (sample != null && at - startedAt <= 300_000_000L) {
+                        handler.post {
+                            if (generation == bydGeneration && bydMode && engine != null)
+                                bydDrive.acceptSpeed(sample.speedKmh, at, SystemClock.elapsedRealtimeNanos(), sample.pedalPercent)
+                        }
+                    }
+                    Thread.sleep(100L)
+                }
+            } catch (_: InterruptedException) {
+                // Mode switched, stopped, or left foreground.
+            } catch (e: Exception) {
+                val cause = if (e is InvocationTargetException) e.targetException else e
+                handler.post {
+                    if (generation == bydGeneration && bydMode && engine != null) {
+                        val message = if (cause is SecurityException)
+                            "BYD API ไม่อนุญาตสิทธิ์ · เลือก GPS"
+                        else "BYD API คันเร่ง/ความเร็วไม่พร้อม · เลือก GPS"
+                        stopEngine(message)
+                    }
+                }
+            } catch (_: LinkageError) {
+                handler.post {
+                    if (generation == bydGeneration && bydMode && engine != null)
+                        stopEngine("BYD SDK ไม่รองรับเฟิร์มแวร์นี้ · เลือก GPS")
+                }
+            }
         }
     }
 
@@ -376,12 +435,16 @@ class MainActivity : Activity() {
 
     private fun stopEngine(message: String = "READY · หยุดเสียงแล้ว") {
         handler.removeCallbacks(tick)
+        bydGeneration++
+        bydTask?.cancel(true)
+        bydTask = null
         if (gpsListening) {
             gpsListening = false
             runCatching { locationManager.removeUpdates(gpsListener) }
         }
         gpsHadFix = false
         gpsDrive.reset()
+        bydDrive.reset()
         engine?.let {
             it.muted = true
             it.release()
@@ -395,7 +458,7 @@ class MainActivity : Activity() {
         if (::rpmLabel.isInitialized) rpmLabel.text = if (realMode) "— RPM" else "900 RPM"
         drive.reset()
         turboTrigger.reset()
-        if (::gearLabel.isInitialized) gearLabel.text = if (realMode) "GPS SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
+        if (::gearLabel.isInitialized) gearLabel.text = if (realMode) "$sourceName SPEED — km/h" else if (demoMode == 0) "N · Free rev" else "GEAR 1  |  0 km/h (จำลอง)"
         updateModeControls()
     }
 
@@ -405,6 +468,7 @@ class MainActivity : Activity() {
     }
     override fun onDestroy() {
         stopEngine()
+        bydExecutor.shutdownNow()
         super.onDestroy()
     }
 

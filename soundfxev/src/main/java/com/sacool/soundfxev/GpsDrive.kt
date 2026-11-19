@@ -4,10 +4,10 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToInt
 
-/** Speed-only virtual gearbox. No access to real pedals, CAN or vehicle actuators.
- * Accepts only fresh monotonic speed fixes; GPS loss invalidates the frame and resets estimation.
+/** Virtual gearbox using speed plus an optional directly measured pedal percentage.
+ * Accepts only fresh monotonic samples; data loss invalidates the frame and resets estimation.
  */
-internal class GpsDrive {
+internal class GpsDrive(private val maxAgeNanos: Long = MAX_AGE_NANOS) {
     data class Frame(val speedKmh: Double, val rpm: Double, val gear: Int,
         val estimatedPedal: Int, val throttle: Int, val load: Int, val shift: VirtualDrive.Shift)
 
@@ -17,6 +17,7 @@ internal class GpsDrive {
     private var speed = 0.0
     private var accel = 0.0
     private var pedal = 0
+    private var hasMeasuredPedal = false
     private var gear = 1
     private var rpm = 900.0
     private var initialized = false
@@ -24,17 +25,19 @@ internal class GpsDrive {
     private var shiftLeft = 0.0
     private var cooldown = 0.0
 
-    fun acceptSpeed(kmh: Double, atNanos: Long, nowNanos: Long): Boolean {
+    fun acceptSpeed(kmh: Double, atNanos: Long, nowNanos: Long, measuredPedal: Int? = null): Boolean {
         if (!kmh.isFinite() || kmh !in 0.0..250.0 ||
-            nowNanos - atNanos !in 0L..MAX_AGE_NANOS) return false
+            nowNanos - atNanos !in 0L..maxAgeNanos ||
+            measuredPedal != null && measuredPedal !in 0..100) return false
         val previous = fixAt
         if (previous != null && atNanos <= previous) return false
-        if (previous == null || atNanos - previous > MAX_AGE_NANOS) {
+        if (previous == null || atNanos - previous > maxAgeNanos) {
             reset()
             speed = kmh
             fixSpeed = kmh
             fixAt = atNanos
-            pedal = if (kmh >= 3) 22 else 0
+            hasMeasuredPedal = measuredPedal != null
+            pedal = measuredPedal ?: if (kmh >= 3) 22 else 0
             return true
         }
         val dt = (atNanos - previous) / 1e9
@@ -42,7 +45,8 @@ internal class GpsDrive {
         if (abs(raw) > 12.0) return false // reject unrealistic jumps / GPS spikes
         val lastAccel = accel
         accel = if (dt >= 0.65) 0.80 * raw + 0.20 * accel else 0.50 * raw + 0.50 * accel
-        pedal = when {
+        hasMeasuredPedal = measuredPedal != null
+        pedal = measuredPedal ?: when {
             kmh < 3 -> 0
             raw < -0.25 || accel < -0.25 -> 0
             lastAccel > 0.65 && raw < 0.15 -> 0 // abrupt lift into coasting
@@ -56,7 +60,7 @@ internal class GpsDrive {
 
     fun frame(nowNanos: Long, dtSeconds: Double, redline: Int, sport: Boolean): Frame? {
         val at = fixAt ?: return null
-        if (nowNanos - at !in 0L..MAX_AGE_NANOS) {
+        if (nowNanos - at !in 0L..maxAgeNanos) {
             reset()
             return null
         }
@@ -101,7 +105,7 @@ internal class GpsDrive {
             (speed * ratios[gear - 1] + blip).coerceAtLeast(900.0 + slip).coerceAtMost(redline.toDouble())
         val rate = if (shift != VirtualDrive.Shift.NONE) 14000.0 else 5000.0
         rpm = (rpm + (target - rpm).coerceIn(-rate * dt, rate * dt)).coerceIn(900.0, redline.toDouble())
-        val estimated = if (speed < 2.5) 0 else pedal
+        val estimated = if (!hasMeasuredPedal && speed < 2.5) 0 else pedal
         val throttle = when (shift) {
             VirtualDrive.Shift.UP -> 0
             VirtualDrive.Shift.DOWN -> maxOf(28, estimated)
@@ -117,6 +121,7 @@ internal class GpsDrive {
         speed = 0.0
         accel = 0.0
         pedal = 0
+        hasMeasuredPedal = false
         gear = 1
         rpm = 900.0
         initialized = false
