@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BydLinkProtocolTest {
+    @Test fun diagnosticsReportStageAndUnwrapActualException() {
+        val cause = java.lang.reflect.InvocationTargetException(SecurityException("permission denied"))
+        assertEquals("SecurityException: permission denied", BydLinkProtocol.describe(cause))
+        assertEquals("ขั้นตอน: CONTEXT_SYSTEM_MAIN", BydLinkProtocol.diagnostic("SFXEV1 STEP CONTEXT_SYSTEM_MAIN"))
+        assertEquals("SPEED: OK 0.0 | PEDAL: FAIL NoSuchMethodException",
+            BydLinkProtocol.diagnostic("SFXEV1 DIAG SPEED: OK 0.0 | PEDAL: FAIL NoSuchMethodException"))
+        assertEquals("DEVICE_INSTANCE: SecurityException: refused",
+            BydLinkProtocol.errorDetail("SFXEV1 ERROR DEVICE_INSTANCE: SecurityException: refused"))
+        assertNull(BydLinkProtocol.parse("SFXEV1 DIAG SPEED: OK 0.0 | PEDAL: FAIL"))
+        assertNull(BydLinkProtocol.diagnostic("R"))
+    }
+
     @Test fun acceptsOnlyValidReadings() {
         val sample = BydLinkProtocol.parse("SFXEV1 SAMPLE 1230000000 63.5 46")!!
         assertEquals(1230000000L, sample.atNanos)

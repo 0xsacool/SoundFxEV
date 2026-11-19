@@ -25,7 +25,8 @@ internal class BydAdbSession(private val context: Context) : AutoCloseable {
         try { connect(allowPrompt = true) } finally { close() }
     }
 
-    fun stream(onSample: (BydLinkProtocol.Sample) -> Unit) {
+    fun stream(diagnosticOnly: Boolean = false, onStatus: (String) -> Unit = {},
+        onSample: (BydLinkProtocol.Sample) -> Unit) {
         try {
             connect(allowPrompt = false)
             val path = context.applicationInfo.sourceDir
@@ -56,8 +57,15 @@ internal class BydAdbSession(private val context: Context) : AutoCloseable {
                             if (eol < 0) break
                             val line = pending.substring(0, eol).trim()
                             pending.delete(0, eol + 1)
+                            val error = BydLinkProtocol.errorDetail(line)
+                            if (error != null) { onStatus(error); throw LinkException(error) }
+                            val diagnostic = BydLinkProtocol.diagnostic(line)
+                            if (diagnostic != null) {
+                                onStatus(diagnostic)
+                                if (diagnosticOnly && line.startsWith(BydLinkProtocol.DIAG)) return
+                                continue
+                            }
                             when {
-                                line == BydLinkProtocol.ERROR -> throw LinkException("BYD SDK read unavailable")
                                 line == BydLinkProtocol.READY && !ready -> { ready = true; request = true }
                                 ready && line == BydLinkProtocol.INVALID -> request = true
                                 ready -> BydLinkProtocol.parse(line)?.let { onSample(it); request = true }

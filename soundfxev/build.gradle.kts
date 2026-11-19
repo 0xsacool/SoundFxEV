@@ -8,8 +8,8 @@ android {
         applicationId = "com.sacool.soundfxev"
         minSdk = 28
         targetSdk = 32
-        versionCode = 7
-        versionName = "0.1.0-alpha.7"
+        versionCode = 8
+        versionName = "0.1.0-alpha.7.1"
     }
 }
 dependencies {

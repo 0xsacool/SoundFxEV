@@ -57,6 +57,9 @@ class MainActivity : Activity() {
     private lateinit var profileSpinner: Spinner
     private lateinit var releaseButton: Button
     private lateinit var linkButton: Button
+    private lateinit var diagnosticButton: Button
+    private lateinit var diagnosticLabel: TextView
+    private var testingLink = false
     private var authSession: BydAdbSession? = null
     private var authTask: Future<*>? = null
     private var bydSession: BydAdbSession? = null
@@ -191,7 +194,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         col.addView(label("SoundFxEV  |  AUDIO LAB", 27, Color.WHITE))
-        col.addView(label("0.1.0 Alpha 7 · GPS / Vehicle Data Link", 15, Color.LTGRAY))
+        col.addView(label("0.1.0 Alpha 7.1 · BYD SDK Diagnostic", 15, Color.LTGRAY))
         status = label("READY · ไม่มีการเชื่อมต่อรถ", 15, Color.rgb(120, 220, 170))
         col.addView(status)
         rpmLabel = label("900 RPM", 48, Color.WHITE)
@@ -200,7 +203,7 @@ class MainActivity : Activity() {
         col.addView(gearLabel)
         col.addView(label("DRIVE MODE · ตั้งค่าขณะรถจอด", 14, Color.LTGRAY))
         col.addView(spinner(listOf("Free rev (N)", "Demo Normal · 6-speed", "Demo Sport · 6-speed", "REAL GPS Normal · 6-speed", "REAL GPS Sport · 6-speed", "BYD LINK Pedal Normal · 6-speed", "BYD LINK Pedal Sport · 6-speed")) {
-            if (demoMode != it && engine != null) stopEngine("READY · เปลี่ยนโหมดแล้ว กรุณา Start ใหม่")
+            if (demoMode != it && (engine != null || testingLink)) stopEngine("READY · เปลี่ยนโหมดแล้ว กรุณา Start ใหม่")
             demoMode = it
             gpsDrive.reset()
             bydDrive.reset()
@@ -230,6 +233,14 @@ class MainActivity : Activity() {
             setOnClickListener { authorizeVehicleLink() }
         }
         col.addView(linkButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        diagnosticButton = Button(this).apply {
+            text = "TEST BYD SDK · ไม่เปิดเสียง"
+            setOnClickListener { testVehicleLink() }
+        }
+        col.addView(diagnosticButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)))
+        diagnosticLabel = label("BYD DIAGNOSTIC · ยังไม่ได้ทดสอบ", 18, Color.rgb(255, 200, 110))
+        diagnosticLabel.setTextIsSelectable(true)
+        col.addView(diagnosticLabel)
         col.addView(label("BYD LINK: เปิด Network ADB ที่รถแล้วกด AUTHORIZE ขณะจอดรถ • อนุญาตบนจอรถ • อ่านคันเร่ง/ความเร็วเท่านั้น", 14, Color.LTGRAY))
         col.addView(label("GPS: คำนวณโหลดจากความเร็ว • เกียร์จำลองทั้งคู่", 14, Color.LTGRAY))
         col.addView(label("ENGINE PROFILE", 14, Color.LTGRAY))
@@ -320,13 +331,14 @@ class MainActivity : Activity() {
         if (::releaseButton.isInitialized) releaseButton.isEnabled = !realMode
         if (::testButton.isInitialized) testButton.isEnabled = !realMode
         if (::linkButton.isInitialized) {
-            linkButton.isEnabled = bydMode && engine == null && !linkAuthorizing
+            linkButton.isEnabled = bydMode && engine == null && !linkAuthorizing && !testingLink
             linkButton.text = when {
                 linkAuthorizing -> "WAITING FOR ADB APPROVAL"
                 linkAuthorized -> "VEHICLE LINK AUTHORIZED · RECHECK"
                 else -> "AUTHORIZE VEHICLE DATA LINK (ADB)"
             }
         }
+        if (::diagnosticButton.isInitialized) diagnosticButton.isEnabled = bydMode && engine == null && linkAuthorized && !linkAuthorizing && !testingLink
         if (::throttleLabel.isInitialized) throttleLabel.text = when {
             bydMode -> "คันเร่งจริง BYD —"
             gpsMode -> "โหลดโดยประมาณ —"
@@ -335,6 +347,7 @@ class MainActivity : Activity() {
     }
 
     private fun startEngine() {
+        if (testingLink) { status.text = "รอผลทดสอบ BYD SDK ก่อน"; return }
         if (bydMode && (!linkAuthorized || linkAuthorizing)) {
             status.text = "กด AUTHORIZE VEHICLE DATA LINK ก่อน"
             return
@@ -398,7 +411,7 @@ class MainActivity : Activity() {
 
     /** Explicit user action; this only authenticates to local ADB, no vehicle data is read yet. */
     private fun authorizeVehicleLink() {
-        if (!bydMode || engine != null || linkAuthorizing || destroyed) return
+        if (!bydMode || engine != null || linkAuthorizing || testingLink || destroyed) return
         linkAuthorizing = true
         linkAuthorized = false
         status.text = "ADB AUTH · อนุญาตการดีบักบนหน้าจอรถ"
@@ -426,13 +439,54 @@ class MainActivity : Activity() {
         }
     }
 
+    /** One diagnostic reading, without audio. Stops automatically after the report. */
+    private fun testVehicleLink() {
+        if (!bydMode || engine != null || !linkAuthorized || testingLink || destroyed) return
+        testingLink = true
+        status.text = "BYD DIAGNOSTIC · กำลังตรวจสอบ"
+        diagnosticLabel.text = "เริ่ม helper ผ่าน ADB..."
+        updateModeControls()
+        val generation = ++bydGeneration
+        val session = BydAdbSession(applicationContext)
+        bydSession = session
+        bydTask = bydExecutor.submit {
+            val result = runCatching {
+                session.stream(diagnosticOnly = true, onStatus = { detail ->
+                    handler.post {
+                        if (generation == bydGeneration && testingLink) diagnosticLabel.text = detail
+                    }
+                }) {}
+            }
+            handler.post {
+                if (generation != bydGeneration || !testingLink || destroyed) return@post
+                testingLink = false
+                bydSession = null
+                bydTask = null
+                if (result.isSuccess) {
+                    status.text = "DIAGNOSTIC COMPLETE · ดูผล SPEED / PEDAL ด้านล่าง"
+                } else {
+                    status.text = "DIAGNOSTIC FAILED · ดูรายละเอียดด้านล่าง"
+                    val e = result.exceptionOrNull()
+                    val detail = if (e is SocketTimeoutException) "TIMEOUT" else e?.message ?: "UNKNOWN"
+                    val last = diagnosticLabel.text.toString()
+                    if (!last.contains(detail)) diagnosticLabel.text = "$last\n$detail"
+                }
+                updateModeControls()
+            }
+        }
+    }
+
     private fun startBydReader() {
         val generation = ++bydGeneration
         val session = BydAdbSession(applicationContext)
         bydSession = session
         bydTask = bydExecutor.submit {
             try {
-                session.stream { sample ->
+                session.stream(onStatus = { detail ->
+                    handler.post {
+                        if (generation == bydGeneration && bydMode && engine != null) diagnosticLabel.text = detail
+                    }
+                }) { sample ->
                     handler.post {
                         if (generation == bydGeneration && bydMode && engine != null)
                             bydDrive.acceptSpeed(sample.speedKmh, sample.atNanos,
@@ -446,12 +500,12 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 handler.post {
                     if (generation == bydGeneration && bydMode && engine != null) {
-                        linkAuthorized = false
                         val message = when (e) {
                             is SocketTimeoutException -> "BYD LINK ไม่ตอบกลับ · ตรวจสอบ ADB"
                             is BydAdbSession.LinkException -> e.message ?: "BYD LINK ไม่พร้อม"
                             else -> "BYD LINK ขาดการเชื่อมต่อ"
                         }
+                        diagnosticLabel.text = "${diagnosticLabel.text}\n$message"
                         stopEngine(message)
                     }
                 }
@@ -486,6 +540,7 @@ class MainActivity : Activity() {
     private fun stopEngine(message: String = "READY · หยุดเสียงแล้ว") {
         handler.removeCallbacks(tick)
         bydGeneration++
+        testingLink = false
         bydSession?.close()
         bydSession = null
         bydTask?.cancel(true)

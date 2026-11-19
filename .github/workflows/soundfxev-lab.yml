@@ -27,9 +27,9 @@ jobs:
       - name: Test DSP and assemble
         run: ./gradlew -p soundfxev testDebugUnitTest assembleDebug --stacktrace
       - name: Prepare APK
-        run: cp "$(find soundfxev/build/outputs/apk/debug -name '*.apk' -print -quit)" SoundFxEV-0.1.0-alpha.7.apk
+        run: cp "$(find soundfxev/build/outputs/apk/debug -name '*.apk' -print -quit)" SoundFxEV-0.1.0-alpha.7.1.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: SoundFxEV-0.1.0-alpha.7
-          path: SoundFxEV-0.1.0-alpha.7.apk
+          name: SoundFxEV-0.1.0-alpha.7.1
+          path: SoundFxEV-0.1.0-alpha.7.1.apk
           if-no-files-found: error
