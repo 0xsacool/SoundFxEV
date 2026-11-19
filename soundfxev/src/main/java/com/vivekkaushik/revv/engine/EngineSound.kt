@@ -43,6 +43,7 @@ data class EngineSoundSettings(
     val blowOffVolume: Int = 85,
     val turboFlutter: Boolean = false,
     val popVolume: Int = 100,
+    val coastVoicing: Boolean = false,
 ) {
     /**
      * The volume as a gain, on a curve so each step sounds about as big as the last. The top
@@ -235,6 +236,7 @@ class EngineSound(private val context: Context) {
             val settings = settings
             configure(settings)
             synth.surround = settings.surround
+            synth.coastVoicing = settings.coastVoicing
             synth.turboEnabled = settings.turboEnabled
             synth.blowOffEnabled = settings.blowOffEnabled
             synth.turboLevel = settings.turboVolume.coerceIn(0, 100) / 100.0

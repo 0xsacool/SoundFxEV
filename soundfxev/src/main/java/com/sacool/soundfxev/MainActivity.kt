@@ -534,6 +534,7 @@ class MainActivity : Activity() {
             turboFlutter = turboFlutter,
             popVolume = popVolume,
             startUp = !realMode,
+            coastVoicing = realMode,
         ))
     }
 

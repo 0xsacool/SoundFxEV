@@ -72,6 +72,8 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
     private val grit = OnePoleLowPass(GRIT_HZ, sampleRate.toDouble())
     private var crackRinging = 0
     private var duck = 1.0
+    /** Preserve the established demo sound; enabled for live GPS/vehicle driving. */
+    @Volatile var coastVoicing = false
     private var bangs = emptyArray<Resonator>()
     private var kicks = DoubleArray(0)
 
@@ -252,10 +254,11 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         val toLoad = state.load.coerceIn(0.0, MAX_LOAD)
         // Keep exhaust pulses audible on a closed throttle without inventing turbo boost.
         // The floor falls smoothly back to the untouched idle/starting sound.
-        val coast = if (state.running && state.starter == 0.0) {
+        val coast = if (coastVoicing && state.running && state.starter == 0.0) {
             val t = ((toRpm - COAST_IDLE_RPM) / (COAST_FULL_RPM - COAST_IDLE_RPM)).coerceIn(0.0, 1.0)
             t * t * (3.0 - 2.0 * t)
         } else 0.0
+        val closedThrottle = 1.0 - (toLoad / COAST_OPEN_LOAD).coerceIn(0.0, 1.0)
         val toAcousticLoad = max(toLoad, COAST_PULSE_LOAD * coast)
         val turboRunning = state.running && state.starter == 0.0 && (turboEnabled || blowOffEnabled)
         turboFx.setTarget(toRpm, toLoad, turboRunning)
@@ -331,8 +334,8 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         // Ease the cabin level with real load and rpm, not the binary overrun flag.
         // This avoids a sudden volume recovery when overrun ends near idle.
         val fromDuck = duck
-        val closedThrottle = 1.0 - (toLoad / COAST_OPEN_LOAD).coerceIn(0.0, 1.0)
-        val toDuck = 1.0 - COAST_DUCK * coast * closedThrottle
+        val toDuck = if (coastVoicing) 1.0 - COAST_DUCK * coast * closedThrottle
+            else if (state.overrun) LEGACY_OVERRUN_LEVEL else 1.0
         duck = fromDuck + (toDuck - fromDuck) * DUCK_STEP
         var power = 0.0
         for (n in 0 until BLOCK) {
@@ -715,9 +718,10 @@ class EngineSynth(private val sampleRate: Int = SAMPLE_RATE, seed: Int = 1) {
         /** Closed-throttle exhaust body and cabin level fade continuously between idle and road rpm. */
         private const val COAST_IDLE_RPM = 900.0
         private const val COAST_FULL_RPM = 3200.0
-        private const val COAST_PULSE_LOAD = 0.20
+        private const val COAST_PULSE_LOAD = 0.48
         private const val COAST_OPEN_LOAD = 0.35
         private const val COAST_DUCK = 0.10
+        private const val LEGACY_OVERRUN_LEVEL = 0.5
         private const val DUCK_STEP = 0.05
 
         /** The bang a few times above the thump, shorter, for speakers too small for the thump. */

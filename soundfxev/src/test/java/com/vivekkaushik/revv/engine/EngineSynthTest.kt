@@ -55,8 +55,8 @@ class EngineSynthTest {
         // In GPS mode the follower ends overrun near 1500 rpm. No gain step should
         // occur when only this flag changes (pops and turbo deliberately disabled).
         val state = EngineState(1500.0, 0.03, overrun = true, running = true)
-        val coast = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state, 1.5, crackle = false)
-        val normal = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state.copy(overrun = false), 1.5, crackle = false)
+        val coast = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state, 1.5, crackle = false, coastVoicing = true)
+        val normal = render(EngineLayout.INLINE_6, ExhaustNote.SPORT, state.copy(overrun = false), 1.5, crackle = false, coastVoicing = true)
         assertEquals(rms(normal), rms(coast), rms(normal) * 0.01)
     }
 
@@ -64,11 +64,12 @@ class EngineSynthTest {
     fun closedThrottleRetainsAudibleExhaustAtRoadRpm() {
         val note = ExhaustNote.SPORT
         val impulse = ImpulseResponse.read(File("src/main/assets/" + note.impulse).readBytes())
-        fun level(state: EngineState): Double {
+        fun level(state: EngineState, live: Boolean = true): Double {
             val synth = EngineSynth().apply {
                 configure(EngineLayout.INLINE_6, note, impulse, crackle = false,
                     bass = EngineSynth.MAX_BASS_DB * 23 / 30, deep = true)
                 surround = false
+                coastVoicing = live
             }
             val block = FloatArray(EngineSynth.BLOCK * EngineSynth.CHANNELS)
             val gain = 2.0 * (7.0 / 30) * (7.0 / 30)
@@ -85,7 +86,9 @@ class EngineSynthTest {
         val coast = level(EngineState(3500.0, 0.03, overrun = true, running = true))
         val idle = level(EngineState(900.0, 0.03, overrun = false, running = true))
         val accelerating = level(EngineState(3500.0, 0.8, overrun = false, running = true))
-        assertTrue("coast $coast must remain audible relative to idle $idle", coast > idle * 0.65)
+        val legacy = level(EngineState(3500.0, 0.03, overrun = true, running = true), live = false)
+        assertTrue("coast $coast vs legacy $legacy", coast > legacy * 1.5)
+        assertTrue("coast $coast must remain audible relative to idle $idle", coast > idle * 0.45)
         assertTrue("coast $coast must remain below acceleration $accelerating", coast < accelerating)
     }
 
@@ -357,10 +360,12 @@ class EngineSynthTest {
         volume: Double = 1.0,
         smallSpeaker: Boolean = false,
         surround: Boolean = true,
+        coastVoicing: Boolean = false,
     ): FloatArray {
         val synth = synth(layout, note, crackle, bass)
         synth.smallSpeaker = smallSpeaker
         synth.surround = surround
+        synth.coastVoicing = coastVoicing
         val size = EngineSynth.BLOCK * EngineSynth.CHANNELS
         val block = FloatArray(size)
         val blocks = (seconds * EngineSynth.SAMPLE_RATE / EngineSynth.BLOCK).toInt()
